@@ -1,0 +1,4 @@
+tmp/
+.env
+*.db*
+.DS_Store

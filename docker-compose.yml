@@ -1,0 +1,18 @@
+services:
+  hot:
+    profiles: [hot]
+    container_name: things-hub-container
+    image: cosmtrek/air
+    working_dir: /app
+    environment:
+      THUB_DB: /app/tmp/thub.db
+      GOTOOLCHAIN: auto
+    ports:
+      - 127.0.0.1:8787:8787
+    volumes:
+      - "${PWD}:/app"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
