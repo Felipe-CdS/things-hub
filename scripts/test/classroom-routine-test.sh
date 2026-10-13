@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tests scripts/classroom-routine.sh with a fake claude on PATH: it must run
 # from the repository, drop ANTHROPIC_API_KEY, allow only the helper and
-# thub-send commands, scope Read and Write, and stop when a piece is missing.
+# thub-send commands, scope Read and file writes, and stop when a piece is missing.
 
 set -u
 
@@ -61,7 +61,7 @@ fi
 run=$(awk 'p { sub(/^arg=/, ""); print; exit } $0 == "arg=--add-dir" { p = 1 }' "$c")
 [ -n "$run" ] || fail "no run directory"
 grep -qxF "arg=Bash(skills/things-hub-collect/thub-send post $run/*)" "$c" || fail "post not scoped to the run directory"
-grep -qxF "arg=Write(/$run/**)" "$c" || fail "Write not scoped to the run directory"
+grep -qxF "arg=Edit(/$run/**)" "$c" || fail "file writes not scoped to the run directory"
 if grep '^arg=Read' "$c" | grep -vxF -e "arg=Read(skills/things-hub-classroom/**)" -e "arg=Read(/$run/**)"; then
 	fail "Read not scoped to the skill and run directories"
 fi

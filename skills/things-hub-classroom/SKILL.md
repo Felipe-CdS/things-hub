@@ -31,7 +31,7 @@ Run every command from the repository root, exactly as written here. `thub-send`
    - **Done** (`done` true) and open: send a `resolve` with `revision` set to the later of the assignment's `revision` and `START`.
    - **Done and not open:** send nothing.
    - **Open but missing from the output** (the course was archived or the work deleted or unpublished): send a `resolve` with `revision` set to `START`. The helper fails as a whole on any API error, so a successful output is always complete.
-6. Write the batch file(s) into the run directory you were given (`<run dir>/classroom-1.json`, `-2`, ...), at most 200 events each. Put `"cursor": {"source": "classroom", "account": "<account>", "value": "<START>"}` only in the last one. With nothing to send, still post one batch with the cursor and an empty `events` list, so the inbox records the run.
+6. Write the batch file(s) into the run directory you were given (`<run dir>/classroom-1.json`, `-2`, ...), at most 200 events each. Each file is `{"schema": "things-hub.batch.v1", "events": [...]}`; the inbox refuses a batch without that `schema`. Put `"cursor": {"source": "classroom", "account": "<account>", "value": "<START>"}` only in the last one. With nothing to send, still post one batch with the cursor and an empty `events` list, so the inbox records the run.
 7. Post each file in order: `skills/things-hub-collect/thub-send post <file>`.
 
 ## Event fields

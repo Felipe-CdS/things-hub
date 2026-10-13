@@ -109,7 +109,7 @@ The run starts `claude -p` with `--permission-mode dontAsk` and allows only thes
 - `bin/thub-classroom assignments`
 - `thub-send flush`, `thub-send open classroom …`, and `thub-send post` for files in the run's temporary directory
 - `date -u`
-- Read inside `skills/things-hub-classroom/` and the temporary directory, and Write inside the temporary directory
+- Read inside `skills/things-hub-classroom/` and the temporary directory, and writing files (an `Edit` rule, which covers Write) inside the temporary directory
 
 Anything else is refused without asking.
 

@@ -54,7 +54,7 @@ claude -p "$prompt" \
 	"Bash($send flush)" \
 	"Bash($send open classroom *)" \
 	"Bash($send post $run/*)" \
-	"Write(/$run/**)" &
+	"Edit(/$run/**)" &
 pid=$!
 (
 	sleep "${CLASSROOM_RUN_TIMEOUT:-1200}"
