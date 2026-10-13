@@ -225,6 +225,13 @@ func TestOld(t *testing.T) {
 			t.Errorf("%s: old = %v, want %v (%+v)", tc.name, got.Old, tc.want, got)
 		}
 	}
+	unarchived := course{ID: "c1", Name: "Cálculo I", UpdateTime: "2026-10-12T10:00:00Z"}
+	for _, i := range []int{0, 3} {
+		tc := cases[i]
+		if got := join(unarchived, tc.cw, tc.s, now); got.Old || got.Revision != longAgo {
+			t.Errorf("%s, in a course unarchived yesterday: %+v", tc.name, got)
+		}
+	}
 }
 
 func TestFetchFailsWhole(t *testing.T) {
