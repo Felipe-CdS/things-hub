@@ -49,8 +49,8 @@ type Assignment struct {
 	// Done is true when the submission is turned in or returned.
 	Done bool `json:"done"`
 	// Old is true when the work was due (or, without a due date, created)
-	// and neither the coursework nor the submission changed in the OldAge
-	// before the fetch.
+	// more than OldAge before the fetch and neither the coursework nor the
+	// submission changed in that OldAge.
 	Old bool `json:"old,omitempty"`
 }
 
