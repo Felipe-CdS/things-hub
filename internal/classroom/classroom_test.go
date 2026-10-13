@@ -97,8 +97,8 @@ func (f *fakeGoogle) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"courseWork": []any{
 			map[string]any{"id": "w1", "title": " Lista 3 ", "description": "Exercícios 1 a 10.",
 				"alternateLink": "https://classroom.google.com/c/c1/a/w1", "workType": "ASSIGNMENT", "maxPoints": 10,
-				"dueDate": map[string]any{"year": 2026, "month": 10, "day": 20},
-				"dueTime": map[string]any{"hours": 2, "minutes": 59},
+				"dueDate":      map[string]any{"year": 2026, "month": 10, "day": 20},
+				"dueTime":      map[string]any{"hours": 2, "minutes": 59},
 				"creationTime": "2026-10-01T10:00:00.123Z", "updateTime": "2026-10-02T10:00:00Z"},
 			map[string]any{"id": "w2", "title": "Lista 2", "alternateLink": "https://classroom.google.com/c/c1/a/w2",
 				"dueDate": map[string]any{"year": 2026, "month": 10, "day": 1}, "dueTime": map[string]any{},
