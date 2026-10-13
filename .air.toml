@@ -1,0 +1,18 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  entrypoint = "./tmp/thub-server"
+  cmd = "go build -o ./tmp/thub-server ./cmd/thub-server/"
+  delay = 1000
+  exclude_dir = ["tmp", ".git"]
+  exclude_regex = ["_test\\.go$"]
+  include_ext = ["go"]
+  log = "build-errors.log"
+  poll = true
+  poll_interval = 500
+  send_interrupt = true
+  stop_on_error = false
+
+[misc]
+  clean_on_exit = false
