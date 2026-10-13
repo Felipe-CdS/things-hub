@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
@@ -628,6 +629,131 @@ func TestCrashAfterDeleteIsStillUndone(t *testing.T) {
 	}
 	if it, _ := e.fake.Get(trash); it.Trashed {
 		t.Fatal("deleted to-do still in the Trash after undo")
+	}
+}
+
+// layoutRunWithDeleteArea applies a run that moves a to-do out of area Old
+// and then deletes Old. It returns the run id and the to-do.
+func layoutRunWithDeleteArea(e *env) (string, string) {
+	e.t.Helper()
+	old := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Old"})
+	e.fake.Put(things.Item{Type: things.TypeArea, Title: "Work"})
+	todo := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Keep", Area: old})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{
+		{Op: plan.OpMove, UUID: todo, List: "Work"},
+		{Op: plan.OpDeleteArea, UUID: old, Reason: "unused"},
+	}
+	for _, o := range e.apply(in, p, ApplyOptions{}).Ops {
+		if o.Status != StatusApplied {
+			e.t.Fatalf("op %+v", o)
+		}
+	}
+	return in.RunID, todo
+}
+
+// assertOneOldArea checks that undo recreated area Old exactly once and
+// put the to-do back into it.
+func assertOneOldArea(e *env, todo string) {
+	e.t.Helper()
+	areas, _ := e.fake.Areas(context.Background())
+	var olds []string
+	for _, a := range areas {
+		if a.Title == "Old" {
+			olds = append(olds, a.UUID)
+		}
+	}
+	if len(olds) != 1 {
+		e.t.Fatalf("areas named Old after the resumed undo: %v", olds)
+	}
+	if it, _ := e.fake.Get(todo); it.Area != olds[0] {
+		e.t.Fatalf("to-do in %q, want the recreated area %q", it.Area, olds[0])
+	}
+}
+
+// crashAfterAddArea creates the area, then cancels the undo's context and
+// fails, the way a thub undo killed right after AddArea stops.
+type crashAfterAddArea struct {
+	*thingstest.Fake
+	cancel context.CancelFunc
+}
+
+func (c *crashAfterAddArea) AddArea(ctx context.Context, title string) (string, error) {
+	if _, err := c.Fake.AddArea(ctx, title); err != nil {
+		return "", err
+	}
+	c.cancel()
+	return "", thingstest.ErrCrash
+}
+
+func TestUndoKilledAfterAddAreaDoesNotRecreateItTwice(t *testing.T) {
+	e := newEnv(t)
+	runID, todo := layoutRunWithDeleteArea(e)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.r.Things = &crashAfterAddArea{Fake: e.fake, cancel: cancel}
+	e.r.Undo(ctx, runID)
+
+	e.r.Things = e.fake
+	if _, err := e.r.Undo(context.Background(), runID); err != nil {
+		t.Fatal(err)
+	}
+	assertOneOldArea(e, todo)
+}
+
+// failOnce fails the request matching method and path after skip earlier
+// matches. With land set the server still gets it, the way a reply lost
+// after the write landed looks.
+type failOnce struct {
+	method, path string
+	skip         int
+	land         bool
+}
+
+func (f *failOnce) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method != f.method || req.URL.Path != f.path || f.skip < 0 {
+		return http.DefaultTransport.RoundTrip(req)
+	}
+	if f.skip--; f.skip >= 0 {
+		return http.DefaultTransport.RoundTrip(req)
+	}
+	if f.land {
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		resp.Body.Close()
+	}
+	return nil, errors.New("connection reset")
+}
+
+func TestUndoWithAFailedRecordStillRestoresIntoTheRecreatedArea(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail *failOnce
+	}{
+		// The audit of the recreated area never reaches the server.
+		{"audit lost", &failOnce{method: http.MethodPost, path: "/v1/audit"}},
+		// The audit lands, the applied op after it lands too but its reply
+		// is lost (the first ledger PUT is the write-ahead row).
+		{"ledger reply lost", &failOnce{method: http.MethodPut, path: "/v1/ledger/items", skip: 1, land: true}},
+		// The audit lands, the applied op after it does not.
+		{"ledger lost", &failOnce{method: http.MethodPut, path: "/v1/ledger/items", skip: 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			runID, todo := layoutRunWithDeleteArea(e)
+			http0 := e.hub.HTTP
+			e.hub.HTTP = &http.Client{Transport: c.fail}
+			if _, err := e.r.Undo(context.Background(), runID); err == nil {
+				t.Fatal("undo with a failed record succeeded")
+			}
+			e.hub.HTTP = http0
+			if _, err := e.r.Undo(context.Background(), runID); err != nil {
+				t.Fatal(err)
+			}
+			assertOneOldArea(e, todo)
+		})
 	}
 }
 

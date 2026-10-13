@@ -45,18 +45,26 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 		return nil, err
 	}
 	applied := map[string]bool{}
+	// Write-ahead rows of steps a killed undo started: the areas that had
+	// the recreated area's title before its AddArea.
+	ahead := map[string]json.RawMessage{}
 	for _, a := range led.AppliedOps {
 		applied[a.OpID] = a.Result == resultOK || a.Result == resultAlready
+		if a.Result == resultStarted {
+			ahead[a.OpID] = a.Detail
+		}
 	}
 	// Areas this undo recreated under a new uuid, so earlier moves out of
 	// them go back into the new area. A resumed undo reads them back from
-	// its own audit.
+	// its own audit, which is written before a step is marked done.
 	areas := map[string]string{}
+	audited := map[string]bool{}
 	prev, err := r.Hub.Audit(ctx, undoRun)
 	if err != nil {
 		return nil, fmt.Errorf("read audit of %s: %w", undoRun, err)
 	}
 	for _, pe := range prev.Entries {
+		audited[pe.OpID] = true
 		var out struct{ UUID string }
 		if pe.Action == "undo_"+plan.KindDeleteArea && json.Unmarshal(pe.After, &out) == nil && out.UUID != "" {
 			areas[pe.ThingUUID] = out.UUID
@@ -69,12 +77,20 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 	for _, e := range entries {
 		step := UndoStep{OpID: undoRun + "/" + strings.TrimPrefix(e.OpID, runID+"/"), Of: e.OpID,
 			Action: e.Action, UUID: e.ThingUUID}
-		if applied[step.OpID] {
+		if applied[step.OpID] || audited[step.OpID] {
+			// An audited step whose ledger write failed is done in Things;
+			// only its applied op is left to record.
+			if !applied[step.OpID] {
+				req := api.LedgerPutRequest{AppliedOps: []api.AppliedOp{{OpID: step.OpID, RunID: undoRun, Result: resultOK}}}
+				if _, err := r.Hub.PutLedger(ctx, req); err != nil {
+					return steps, fmt.Errorf("record %s: %w", step.OpID, err)
+				}
+			}
 			step.Status, step.Describe = StatusReplayed, "already undone"
 			steps = append(steps, step)
 			continue
 		}
-		after, state, err := r.inverse(ctx, e, &step, areas)
+		after, state, err := r.inverse(ctx, e, &step, areas, ahead)
 		if err != nil {
 			step.Status, step.Error = StatusFailed, err.Error()
 			r.printf("%-9s %s\n          %s\n", step.Status, step.Describe, step.Error)
@@ -93,15 +109,17 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 		if e.ThingUUID != "" && state != "" {
 			rows = []api.Thing{{UUID: e.ThingUUID, Marker: e.Marker, State: state}}
 		}
-		req := api.LedgerPutRequest{Items: rows, AppliedOps: []api.AppliedOp{{OpID: step.OpID, RunID: undoRun, Result: resultOK}}}
-		if _, err := r.Hub.PutLedger(ctx, req); err != nil {
-			return steps, fmt.Errorf("record %s: %w", step.OpID, err)
-		}
+		// The audit goes first: it carries a recreated area's new uuid,
+		// which must be durable before the step counts as undone.
 		entry := api.AuditEntry{RunID: undoRun, OpID: step.OpID, Action: "undo_" + e.Action, Key: e.Key,
 			ThingUUID: e.ThingUUID, Marker: e.Marker, ThingType: e.ThingType, Before: e.After,
 			After: mustJSON(after), At: r.Now().UTC()}
 		if _, err := r.Hub.PostAudit(ctx, []api.AuditEntry{entry}); err != nil {
 			return steps, fmt.Errorf("audit %s: %w", step.OpID, err)
+		}
+		req := api.LedgerPutRequest{Items: rows, AppliedOps: []api.AppliedOp{{OpID: step.OpID, RunID: undoRun, Result: resultOK}}}
+		if _, err := r.Hub.PutLedger(ctx, req); err != nil {
+			return steps, fmt.Errorf("record %s: %w", step.OpID, err)
 		}
 		r.printf("%-9s %s\n", step.Status, step.Describe)
 		steps = append(steps, step)
@@ -158,7 +176,8 @@ func restoreChange(ch things.Change, before things.Item) things.Change {
 
 // inverse writes the inverse of one audit entry and returns what it wrote
 // and the item's new ledger state.
-func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep, areas map[string]string) (any, string, error) {
+func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep, areas map[string]string,
+	ahead map[string]json.RawMessage) (any, string, error) {
 	var before things.Item
 	if len(e.Before) > 0 && string(e.Before) != "null" {
 		if err := json.Unmarshal(e.Before, &before); err != nil {
@@ -238,13 +257,47 @@ func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep, 
 		return r.deleteCreatedTag(ctx, tag.Title, step)
 	case plan.KindDeleteArea:
 		step.Describe = fmt.Sprintf("+ recreate area %q (new uuid; its contents were moved before)", before.Title)
-		uuid, err := r.Things.AddArea(ctx, before.Title)
+		uuid, err := r.recreateArea(ctx, UndoRunID(e.RunID), step.OpID, before.Title, ahead)
 		if err == nil && uuid != "" {
 			areas[e.ThingUUID] = uuid
 		}
 		return map[string]string{"uuid": uuid}, "", err
 	}
 	return nil, "", fmt.Errorf("no inverse for action %q", e.Action)
+}
+
+// recreateArea adds an area titled title, write-ahead like apply: it first
+// records the areas that already have that title, so a resumed undo adopts
+// the area its killed run created instead of adding a second one.
+func (r *Runner) recreateArea(ctx context.Context, runID, opID, title string, ahead map[string]json.RawMessage) (string, error) {
+	list, err := r.Things.Areas(ctx)
+	if err != nil {
+		return "", err
+	}
+	known := []string{}
+	for _, a := range list {
+		if a.Title == title {
+			known = append(known, a.UUID)
+		}
+	}
+	if raw, ok := ahead[opID]; ok {
+		var had []string
+		if err := json.Unmarshal(raw, &had); err != nil {
+			return "", fmt.Errorf("decode write-ahead of %s: %w", opID, err)
+		}
+		for _, u := range known {
+			if !slices.Contains(had, u) {
+				return u, nil
+			}
+		}
+		known = had
+	}
+	req := api.LedgerPutRequest{AppliedOps: []api.AppliedOp{{OpID: opID, RunID: runID, Result: resultStarted,
+		Detail: mustJSON(known)}}}
+	if _, err := r.Hub.PutLedger(ctx, req); err != nil {
+		return "", fmt.Errorf("record %s: %w", opID, err)
+	}
+	return r.Things.AddArea(ctx, title)
 }
 
 // undelete moves an item out of the Trash, and recreates it from its before
