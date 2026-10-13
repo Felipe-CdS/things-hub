@@ -1,7 +1,8 @@
 #!/bin/sh
 # End-to-end test of thub-send against a locally started thub-server: an
 # accepted batch, a duplicate resend, cursor and open, spool on failure and
-# flush, refused batches, and flush order. Run from anywhere; needs go and curl.
+# flush, refused batches (including a forbidden cursor), and flush order. Run
+# from anywhere; needs go and curl.
 
 set -eu
 
@@ -113,7 +114,6 @@ expect_rc "post to an unreachable inbox exits 75" 75 "$rc"
 
 # Spool on failure: a bad token keeps the batch too.
 batch "$work/b3.json" "2026-10-13T14:00:00Z" "1760364000.000100"
-sleep 1 # distinct spool timestamps, so flush order is defined
 rc=0
 THUB_TOKEN="thub_wrong" "$send" post "$work/b3.json" >"$work/out" 2>"$work/err" || rc=$?
 expect_rc "post with a bad token exits 75" 75 "$rc"
@@ -154,6 +154,25 @@ rc=0
 expect_rc "post of an invalid batch exits 2" 2 "$rc"
 expect_grep "invalid batch reports 400" 'HTTP 400' "$work/err"
 [ "$(failed)" = 2 ] && pass "the invalid batch moves to failed" || fail "failed holds $(failed) batches, want 2"
+
+# A cursor for an account the sender may not write is refused with 403 and
+# moved to failed; flush goes on with the batches after it, oldest first,
+# even when they were spooled in the same second.
+sed 's/"account":"T0TEST","value"/"account":"TOTHER","value"/' "$work/b1.json" >"$work/b7.json"
+batch "$work/b8.json" "2026-10-13T15:30:00Z" "1760369400.000100"
+batch "$work/b9.json" "2026-10-13T15:45:00Z" "1760370300.000100"
+for b in b7 b8 b9; do
+	THUB_URL="http://127.0.0.1:1" "$send" post "$work/$b.json" >"$work/out" 2>"$work/err" || true
+done
+[ "$(spooled)" = 3 ] && pass "three batches are spooled" || fail "spool holds $(spooled) batches, want 3"
+rc=0
+"$send" flush >"$work/out" 2>"$work/err" || rc=$?
+expect_rc "flush with a forbidden cursor exits 2" 2 "$rc"
+expect_grep "forbidden cursor reports 403" 'HTTP 403' "$work/err"
+[ "$(spooled)" = 0 ] && pass "flush sends the batches after the forbidden one" || fail "spool holds $(spooled) batches after flush"
+[ "$(failed)" = 3 ] && pass "the forbidden batch moves to failed" || fail "failed holds $(failed) batches, want 3"
+"$send" cursor slack T0TEST >"$work/out"
+expect_grep "same-second batches flush oldest first" '"value":"2026-10-13T15:45:00Z"' "$work/out"
 
 # Resolve closes the item.
 cat >"$work/b6.json" <<'EOF'

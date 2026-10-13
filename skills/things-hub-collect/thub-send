@@ -17,10 +17,11 @@
 #   THUB_SPOOL               spool directory (default ${XDG_STATE_HOME:-$HOME/.local/state}/things-hub/spool)
 #
 # Exit status: 0 sent; 1 usage or settings error; 2 the server refused a
-# batch or some of its events (the batch is moved to <spool>/failed and the
-# response printed); 75 the inbox is unreachable or erroring, so the batch
-# stays in the spool for the next post or flush. Resending is always safe:
-# the server reports events it already has as duplicate.
+# batch, its cursor's account, or some of its events (the batch is moved to
+# <spool>/failed and the response printed); 75 the inbox is unreachable or
+# erroring, so the batch stays in the spool for the next post or flush.
+# Resending is always safe: the server reports events it already has as
+# duplicate.
 #
 # POSIX sh and curl only.
 
@@ -143,6 +144,13 @@ send_one() {
 		echo "thub-send: $THUB_URL is unreachable; $name stays in $spool" >&2
 		;;
 	*)
+		if [ "$code" = 403 ] && grep -q 'may not write the cursor' "$resp"; then
+			mv "$f" "$spool/failed/$name"
+			echo "thub-send: $name: refused with HTTP 403: $(head -c 500 "$resp")" >&2
+			echo "thub-send: allow the account on the sender, then post the batch again; it is in $spool/failed/$name" >&2
+			rm -f "$resp"
+			return 2
+		fi
 		echo "thub-send: $name: HTTP $code: $(head -c 500 "$resp")" >&2
 		echo "thub-send: $name stays in $spool; run 'thub-send flush' once the inbox or the credentials are fixed" >&2
 		;;
@@ -189,10 +197,14 @@ flush() {
 
 spool_file() {
 	[ -f "$1" ] && [ -s "$1" ] || die "$1 is missing or empty"
-	stamp=$(date -u +%Y%m%dT%H%M%SZ)
-	tmp=$spool/.tmp-$stamp-$$.json
+	seq=$(cat "$spool/.seq" 2>/dev/null || true)
+	case $seq in '' | *[!0-9]*) seq=0 ;; esac
+	seq=$((seq + 1))
+	echo "$seq" >"$spool/.seq" || die "cannot write $spool/.seq"
+	name=$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%010d' "$seq")
+	tmp=$spool/.tmp-$name.json
 	cp "$1" "$tmp" || die "cannot copy $1 into $spool"
-	mv "$tmp" "$spool/$stamp-$$.json" || die "cannot spool $1"
+	mv "$tmp" "$spool/$name.json" || die "cannot spool $1"
 }
 
 [ $# -ge 1 ] || usage

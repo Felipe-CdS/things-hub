@@ -24,7 +24,7 @@ You read the owner's work Slack workspaces and GitHub orgs, find what someone is
 
 1. Pick the row of `accounts.md` (the owner names an alias, or you go through every row in turn). Note its `source`, `account`, `tool` and `owner`.
 2. Record the run start time: `date -u +%Y-%m-%dT%H:%M:%SZ`. Call it `START`.
-3. Flush anything left from an earlier run: `thub-send flush`. Exit 75 means the inbox is unreachable: tell the owner and stop (nothing is lost; the next run starts from the stored cursor).
+3. Flush anything left from an earlier run: `thub-send flush`. Exit 75 means the inbox is unreachable or erroring (such as a bad token): tell the owner and stop (nothing is lost; the next run starts from the stored cursor).
 4. Collect with the Slack or GitHub steps below.
 5. Write the batch file(s) (format below) in a temporary directory, never inside a git repository, and send each with `thub-send post <file>`.
 6. Read the result and report to the owner (see "After posting").
@@ -67,7 +67,7 @@ The row's `account` is the org name. Use the `gh` CLI that is already logged in 
 3. The owner's PRs that need a fix (`pr-needs-fix`):
    `gh search prs --author=@me --owner=<org> --state=open --archived=false --limit=200 --json number,title,url,repository,updatedAt`
    then for each: `gh pr view <url> --json reviewDecision,statusCheckRollup,latestReviews`. It needs a fix when `reviewDecision` is `CHANGES_REQUESTED`, or a check's `conclusion` is `FAILURE`, `TIMED_OUT`, `CANCELLED`, `ACTION_REQUIRED` or `STARTUP_FAILURE`, or a status context's `state` is `FAILURE` or `ERROR`. Its revision is the latest `completedAt` of a failing check or `submittedAt` of a changes-requested review.
-4. Resolve what left: `thub-send open github <org>`. Every open item whose `kind` and `source_id` did not come back from steps 1 to 3 gets a `resolve`. Only do this when all three searches succeeded and none hit the 200 limit; otherwise skip resolves this run and say so.
+4. Resolve what left: `thub-send open github <org>`. Every open item whose `kind` and `source_id` did not come back as an upsert from steps 1 to 3 (for `pr-needs-fix`: a PR that no longer needs a fix) gets a `resolve`. Only do this when all three searches succeeded and none hit the 200 limit; otherwise skip resolves this run and say so.
 
 `source_id` is `<repository.nameWithOwner>#<number>`, exactly as `gh` returns it (such as `acme/api#123`). `revision` is the item's `updatedAt` (or the pr-needs-fix time above). `url` is the item's `url`. `from` is the author's login.
 
@@ -126,8 +126,8 @@ Do not send a `key`: the server computes it. More than 200 events: split into se
 | Exit | Meaning | What to do |
 | --- | --- | --- |
 | 0 | sent; each event is `accepted`, `duplicate` or `stale` | done |
-| 2 | the server refused the batch or some events (`rejected` with a `reason`) | the accepted ones are stored, the cursor is not. Fix the rejected events, write a new batch with only those (and the cursor), and post it |
-| 75 | inbox unreachable, or HTTP error such as 401 or 502 | the batch is kept in the spool and goes out with the next `post` or `flush`. Tell the owner |
+| 2 | the server refused the batch, its cursor's account (HTTP 403, the account is not allowed on the sender), or some events (`rejected` with a `reason`) | the batch is in the spool's `failed/` directory; any accepted events are stored, the cursor is not. For a 403, tell the owner to allow the account on the sender. Otherwise fix the rejected events, write a new batch with only those (and the cursor), and post it |
+| 75 | inbox unreachable, or HTTP error such as 401, a 403 from Cloudflare Access, or 502 | the batch is kept in the spool and goes out with the next `post` or `flush`. Tell the owner |
 | 1 | usage or settings error (such as `THUB_URL` not set) | tell the owner; see INSTALL.md |
 
 Then tell the owner, per account: how many events were accepted, duplicate, stale and rejected, how many resolves you sent, and anything you skipped or could not read. Do not list titles or summaries unless the owner asks.
