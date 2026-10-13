@@ -197,7 +197,7 @@ func TestFetchAssignments(t *testing.T) {
 	}
 }
 
-func TestOld(t *testing.T) {
+func TestOldUsesOnlyTheWorkAndSubmission(t *testing.T) {
 	const longAgo = "2026-09-20T10:00:00Z"
 	co := course{ID: "c1", Name: "Cálculo I"}
 	cases := []struct {
@@ -223,13 +223,6 @@ func TestOld(t *testing.T) {
 	for _, tc := range cases {
 		if got := join(co, tc.cw, tc.s, now); got.Old != tc.want {
 			t.Errorf("%s: old = %v, want %v (%+v)", tc.name, got.Old, tc.want, got)
-		}
-	}
-	unarchived := course{ID: "c1", Name: "Cálculo I", UpdateTime: "2026-10-12T10:00:00Z"}
-	for _, i := range []int{0, 3} {
-		tc := cases[i]
-		if got := join(unarchived, tc.cw, tc.s, now); got.Old || got.Revision != longAgo {
-			t.Errorf("%s, in a course unarchived yesterday: %+v", tc.name, got)
 		}
 	}
 }

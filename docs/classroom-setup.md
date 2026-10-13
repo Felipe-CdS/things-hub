@@ -121,7 +121,7 @@ The skill sends one `assignment` event per open coursework:
 - The revision is the later of the coursework's and your submission's update time and, when the item is not open in the inbox, the run's start time (so work that comes back after a resolve is queued again); an open item never goes below the revision the inbox already has.
 - The event carries the due date, the link and a short summary.
 
-Old work is filtered: work not open in the inbox is left out when it was due (or, without a due date, created) more than 14 days ago and neither it, your submission nor its course (an archive or unarchive) changed in those 14 days.
+Old work is filtered: work not open in the inbox is left out when it was due (or, without a due date, created) more than 14 days ago and neither it nor your submission changed in those 14 days. Unarchiving a course does not bring such old work back; only a change to the work or your submission (an unsubmit, for example) does.
 
 Turning in a submission resolves its item, and so does a returned one. The on-demand run can then complete the to-do. An item also resolves when its course is archived or the work is removed. If you unsubmit, the next run sends the assignment again.
 

@@ -49,7 +49,7 @@ type Assignment struct {
 	// Done is true when the submission is turned in or returned.
 	Done bool `json:"done"`
 	// Old is true when the work was due (or, without a due date, created)
-	// and it, the submission and the course last changed more than OldAge
+	// and neither the coursework nor the submission changed in the OldAge
 	// before the fetch.
 	Old bool `json:"old,omitempty"`
 }
@@ -67,7 +67,6 @@ type course struct {
 	Name          string `json:"name"`
 	Section       string `json:"section"`
 	AlternateLink string `json:"alternateLink"`
-	UpdateTime    string `json:"updateTime"`
 }
 
 type date struct {
@@ -175,7 +174,7 @@ func join(co course, cw courseWork, s submission, now time.Time) Assignment {
 	if since == "" {
 		since = a.Created
 	}
-	a.Old = before(since, cutoff) && before(latest(now, a.Revision, co.UpdateTime), cutoff)
+	a.Old = before(since, cutoff) && before(a.Revision, cutoff)
 	return a
 }
 
