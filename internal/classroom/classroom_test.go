@@ -197,6 +197,36 @@ func TestFetchAssignments(t *testing.T) {
 	}
 }
 
+func TestOld(t *testing.T) {
+	const longAgo = "2026-09-20T10:00:00Z"
+	co := course{ID: "c1", Name: "Cálculo I"}
+	cases := []struct {
+		name string
+		cw   courseWork
+		s    submission
+		want bool
+	}{
+		{"undated, created and unchanged long ago", courseWork{ID: "w", CreationTime: longAgo, UpdateTime: longAgo},
+			submission{State: "CREATED", UpdateTime: longAgo}, true},
+		{"undated, unsubmitted yesterday", courseWork{ID: "w", CreationTime: longAgo, UpdateTime: longAgo},
+			submission{State: "RECLAIMED_BY_STUDENT", UpdateTime: "2026-10-12T10:00:00Z"}, false},
+		{"undated, created recently", courseWork{ID: "w", CreationTime: "2026-10-10T10:00:00Z", UpdateTime: "2026-10-10T10:00:00Z"},
+			submission{State: StateNone}, false},
+		{"long overdue, unchanged", courseWork{ID: "w", DueDate: &date{2026, 9, 25}, CreationTime: longAgo, UpdateTime: longAgo},
+			submission{State: StateNone}, true},
+		{"long overdue, coursework edited lately", courseWork{ID: "w", DueDate: &date{2026, 9, 25}, CreationTime: longAgo,
+			UpdateTime: "2026-10-11T10:00:00Z"}, submission{State: StateNone}, false},
+		{"due soon, created long ago", courseWork{ID: "w", DueDate: &date{2026, 10, 20}, CreationTime: longAgo, UpdateTime: longAgo},
+			submission{State: StateNone}, false},
+		{"no times at all", courseWork{ID: "w"}, submission{State: StateNone}, false},
+	}
+	for _, tc := range cases {
+		if got := join(co, tc.cw, tc.s, now); got.Old != tc.want {
+			t.Errorf("%s: old = %v, want %v (%+v)", tc.name, got.Old, tc.want, got)
+		}
+	}
+}
+
 func TestFetchFailsWhole(t *testing.T) {
 	g := newFakeGoogle(t)
 	g.failPath = "/v1/courses/c2/courseWork/-/studentSubmissions"

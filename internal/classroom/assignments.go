@@ -20,6 +20,10 @@ const (
 // MaxDescriptionRunes bounds the description copied into an assignment.
 const MaxDescriptionRunes = 1500
 
+// OldAge is how far in the past work must lie, and stay unchanged, to be
+// old: due (or, without a due date, created) and last changed before it.
+const OldAge = 14 * 24 * time.Hour
+
 // Assignment is one published coursework joined with the student's own
 // submission, with the event fields the skill needs already worked out.
 type Assignment struct {
@@ -44,6 +48,9 @@ type Assignment struct {
 	Late     bool   `json:"late,omitempty"`
 	// Done is true when the submission is turned in or returned.
 	Done bool `json:"done"`
+	// Old is true when the work was due (or, without a due date, created)
+	// and last changed more than OldAge before the fetch.
+	Old bool `json:"old,omitempty"`
 }
 
 // Assignments is the output of the assignments command.
@@ -161,7 +168,25 @@ func join(co course, cw courseWork, s submission, now time.Time) Assignment {
 		a.State = StateNone
 	}
 	a.Revision = latest(now, cw.UpdateTime, s.UpdateTime, cw.CreationTime)
+	cutoff := now.Add(-OldAge)
+	since := a.Due
+	if since == "" {
+		since = a.Created
+	}
+	a.Old = before(since, cutoff) && before(a.Revision, cutoff)
 	return a
+}
+
+// before reports whether s, an RFC 3339 time or a YYYY-MM-DD date, is
+// before t; an empty or unparsable s is not.
+func before(s string, t time.Time) bool {
+	v, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		if v, err = time.Parse(time.DateOnly, s); err != nil {
+			return false
+		}
+	}
+	return v.Before(t)
 }
 
 // due renders a Classroom due date and time, both in UTC.

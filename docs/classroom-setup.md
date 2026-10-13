@@ -109,7 +109,7 @@ The run starts `claude -p` with `--permission-mode dontAsk` and allows only thes
 - `bin/thub-classroom assignments`
 - `thub-send flush`, `thub-send open classroom …`, and `thub-send post` for files in the run's temporary directory
 - `date -u`
-- Read, and Write inside that temporary directory
+- Read inside `skills/things-hub-classroom/` and the temporary directory, and Write inside the temporary directory
 
 Anything else is refused without asking.
 
@@ -118,10 +118,10 @@ Anything else is refused without asking.
 The skill sends one `assignment` event per open coursework:
 
 - `source_id` is `<courseId>/<courseWorkId>`.
-- The revision is the later of the coursework's and your submission's update time.
+- The revision is the later of the coursework's and your submission's update time and, when the item is not open in the inbox, the run's start time (so work that comes back after a resolve is queued again); an open item never goes below the revision the inbox already has.
 - The event carries the due date, the link and a short summary.
 
-Old work is filtered: anything already more than 14 days overdue when the routine first sees it is left out.
+Old work is filtered: work not open in the inbox is left out when it was due (or, without a due date, created) more than 14 days ago and neither it nor your submission changed in those 14 days.
 
 Turning in a submission resolves its item, and so does a returned one. The on-demand run can then complete the to-do. An item also resolves when its course is archived or the work is removed. If you unsubmit, the next run sends the assignment again.
 
