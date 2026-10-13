@@ -250,8 +250,9 @@ SELECT state, revision_ns, attempts, lease_id, ack_lease_id, ack_revision_ns FRO
 		return res, nil
 	}
 
-	for _, ref := range a.Items {
-		id, err := thingID(ctx, tx, ref.Marker, ref.UUID)
+	ids := make([]int64, len(a.Items))
+	for i, ref := range a.Items {
+		ids[i], err = thingID(ctx, tx, ref.Marker, ref.UUID)
 		if errors.Is(err, ErrNotFound) {
 			res.Reason = "item " + ref.Marker + ref.UUID + " is not in the ledger"
 			return res, nil
@@ -259,7 +260,9 @@ SELECT state, revision_ns, attempts, lease_id, ack_lease_id, ack_revision_ns FRO
 		if err != nil {
 			return res, err
 		}
-		if err := putLink(ctx, tx, a.Key, id, ref.Role, now); err != nil {
+	}
+	for i, ref := range a.Items {
+		if err := putLink(ctx, tx, a.Key, ids[i], ref.Role, now); err != nil {
 			return res, err
 		}
 	}

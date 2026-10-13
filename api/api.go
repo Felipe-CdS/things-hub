@@ -306,7 +306,7 @@ type Thing struct {
 	Observed  json.RawMessage `json:"observed,omitempty"`
 	OpID      string          `json:"op_id,omitempty"`
 	RunID     string          `json:"run_id,omitempty"`
-	Links     []Link          `json:"links,omitempty"`
+	Links     []Link          `json:"links"`
 	CreatedAt time.Time       `json:"created_at,omitzero"`
 	UpdatedAt time.Time       `json:"updated_at,omitzero"`
 }

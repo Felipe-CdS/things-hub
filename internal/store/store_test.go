@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -444,6 +445,52 @@ func TestLedgerAndLinks(t *testing.T) {
 	p = pull(t, st, "mac", 10, 600)
 	if len(p.Items) != 1 || len(p.Items[0].Things) != 1 || p.Items[0].Things[0].UUID != "UUID-1" {
 		t.Fatalf("pull things = %+v", p.Items)
+	}
+}
+
+func TestRejectedAckWritesNoLinks(t *testing.T) {
+	st, _ := newStore(t)
+	s := mac(t, st)
+	ingest(t, st, s, nil, ghEvent("felipe-cds/mic#12", "2026-10-13T11:00:00Z"))
+	p := pull(t, st, "mac", 10, 600)
+	if _, err := st.PutLedger(ctx, api.LedgerPutRequest{Items: []api.Thing{{Marker: "th-4k2m9x7qpa", UUID: "UUID-1", Type: api.ThingTodo, Origin: api.OriginHub, State: api.ThingOpen}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ack(t, st, "mac", p.LeaseID, api.Ack{Key: key12, Revision: "2026-10-13T11:00:00Z", Outcome: api.OutcomeCreated,
+		Items: []api.ThingRef{{UUID: "UUID-1", Role: api.RolePrimary}, {UUID: "UUID-missing", Role: api.RoleChild}}})
+	if r[0].Result != api.AckRejected {
+		t.Fatalf("ack = %+v", r)
+	}
+	led, err := st.Ledger(ctx, LedgerFilter{Key: key12})
+	if err != nil || len(led.Things) != 0 {
+		t.Fatalf("ledger by key after rejected ack = %+v, %v", led, err)
+	}
+}
+
+func TestEmptyLinksOverJSONClearLinks(t *testing.T) {
+	st, _ := newStore(t)
+	if _, err := st.PutLedger(ctx, api.LedgerPutRequest{Items: []api.Thing{{
+		Marker: "th-4k2m9x7qpa", Type: api.ThingTodo, Origin: api.OriginHub, State: api.ThingOpen, Links: []api.Link{{Key: key12, Role: api.RolePrimary}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := json.Marshal(api.LedgerPutRequest{Items: []api.Thing{{Marker: "th-4k2m9x7qpa", Links: []api.Link{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req api.LedgerPutRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := st.PutLedger(ctx, req)
+	if err != nil || len(resp.Items) != 1 || len(resp.Items[0].Links) != 0 {
+		t.Fatalf("unlink = %+v, %v", resp, err)
+	}
+	led, err := st.Ledger(ctx, LedgerFilter{Key: key12})
+	if err != nil || len(led.Things) != 0 {
+		t.Fatalf("ledger by key after unlink = %+v, %v", led, err)
 	}
 }
 
