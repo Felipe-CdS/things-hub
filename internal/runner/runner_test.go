@@ -421,6 +421,31 @@ func TestDeleteAreaRefusedWhenThingsStillHoldsContents(t *testing.T) {
 	}
 }
 
+func TestDeleteAreaWaitsForEarlierMovesToLand(t *testing.T) {
+	e := newEnv(t)
+	old := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Old"})
+	e.fake.Put(things.Item{Type: things.TypeArea, Title: "Work"})
+	todo := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Keep", Area: old})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{
+		{Op: plan.OpMove, UUID: todo, List: "Work"},
+		{Op: plan.OpDeleteArea, UUID: old, Reason: "unused"},
+	}
+	e.fake.HideWrites = 3
+	e.r.FindTimeout = time.Hour
+	e.r.Now = func() time.Time { e.now = e.now.Add(time.Second); return e.now }
+	rep := e.apply(in, p, ApplyOptions{})
+	for _, o := range rep.Ops {
+		if o.Status != StatusApplied {
+			t.Fatalf("report %+v", rep.Ops)
+		}
+	}
+	if _, ok := e.fake.Get(old); ok {
+		t.Fatal("the emptied area was not deleted")
+	}
+}
+
 func TestRetryWaitsForAnInFlightCreate(t *testing.T) {
 	e := newEnv(t)
 	key := e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T10:00:00Z", api.OpUpsert)

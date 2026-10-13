@@ -513,8 +513,18 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 	case plan.KindDelete:
 		already, state = st.Trashed, api.ThingTrashed
 	case plan.KindDeleteArea:
-		if st.Contents > 0 {
-			return or, fmt.Errorf("area %s is not empty in Things (%d project(s) or to-do(s)); left in place", op.UUID, st.Contents)
+		n := st.Contents
+		if _, err := s.poll(ctx, func() (bool, error) {
+			a, err := s.r.Things.Lookup(ctx, op.UUID)
+			if a != nil {
+				n = a.Contents
+			}
+			return n == 0, err
+		}); err != nil {
+			return or, err
+		}
+		if n > 0 {
+			return or, fmt.Errorf("area %s is not empty in Things (%d project(s) or to-do(s)); left in place", op.UUID, n)
 		}
 		state = api.ThingGone
 	}

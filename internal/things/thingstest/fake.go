@@ -19,6 +19,11 @@ import (
 var ErrCrash = errors.New("simulated crash")
 
 // Fake is an in-memory Things.
+type staleArea struct {
+	area  string
+	reads int
+}
+
 type Fake struct {
 	mu    sync.Mutex
 	items map[string]*things.Item
@@ -28,10 +33,12 @@ type Fake struct {
 	clock time.Time
 	// Calls lists every write, as "<method> <uuid or title>".
 	Calls []string
-	// HideWrites keeps a new item out of FindByMarker for this many
-	// searches, like Things' asynchronous URL-scheme writes.
+	// HideWrites keeps a new item out of FindByMarker, and a moved item in
+	// its old area's contents, for this many reads, like Things'
+	// asynchronous URL-scheme writes.
 	HideWrites int
 	hidden     map[string]int
+	movedFrom  map[string]*staleArea
 	// Fail is called before each method; a non-nil error is returned
 	// instead of running it.
 	Fail func(method string) error
@@ -39,7 +46,7 @@ type Fake struct {
 
 // New returns an empty Fake.
 func New() *Fake {
-	return &Fake{items: map[string]*things.Item{}, hidden: map[string]int{},
+	return &Fake{items: map[string]*things.Item{}, hidden: map[string]int{}, movedFrom: map[string]*staleArea{},
 		clock: time.Date(2026, 10, 13, 9, 0, 0, 0, time.Local)}
 }
 
@@ -213,8 +220,13 @@ func (f *Fake) Lookup(_ context.Context, uuid string) (*things.State, error) {
 	st := &things.State{UUID: uuid, Type: it.Type, Status: it.Status, Trashed: it.Trashed,
 		Modified: it.Modified, Checklist: it.ChecklistTitles()}
 	if it.Type == things.TypeArea {
-		for _, o := range f.items {
-			if o.Area == uuid && !o.Trashed {
+		for u, o := range f.items {
+			area := o.Area
+			if m := f.movedFrom[u]; m != nil && m.reads > 0 {
+				area = m.area
+				m.reads--
+			}
+			if area == uuid && !o.Trashed {
 				st.Contents++
 			}
 		}
@@ -326,6 +338,9 @@ func (f *Fake) update(method, uuid string, c things.Change) error {
 		it.Tags = slices.Clone(*c.Tags)
 	}
 	if c.ListID != nil {
+		if f.HideWrites > 0 && it.Area != "" {
+			f.movedFrom[uuid] = &staleArea{it.Area, f.HideWrites}
+		}
 		f.place(it, *c.ListID)
 	}
 	if c.HeadingID != nil {
