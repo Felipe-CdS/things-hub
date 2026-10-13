@@ -94,19 +94,6 @@ func (e *CheckError) Error() string {
 var ErrLayoutPreview = errors.New("this plan reorganizes existing items and the layout is not approved yet: " +
 	"show the dry run to the owner, then apply with --approve-layout once they say yes")
 
-// LoadRun reads a run folder's input.json and the plan at planPath.
-func LoadRun(dir, planPath string) (*plan.Input, *plan.Plan, error) {
-	var in plan.Input
-	if err := plan.ReadJSON(filepath.Join(dir, "input.json"), &in); err != nil {
-		return nil, nil, err
-	}
-	var p plan.Plan
-	if err := plan.ReadJSON(planPath, &p); err != nil {
-		return nil, nil, err
-	}
-	return &in, &p, nil
-}
-
 // applyState is one apply's working state.
 type applyState struct {
 	r       *Runner
