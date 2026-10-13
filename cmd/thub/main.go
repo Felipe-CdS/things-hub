@@ -46,7 +46,7 @@ collector helpers (used by skills):
   post <batch.json>              validate and send an event batch (kept in the spool if unreachable)
   flush                          resend spooled batches
 
-settings come from a mode-600 .env: THUB_ENV_FILE, else ./.env, else
+settings come from a mode-600 .env: THUB_ENV_FILE, else
 ~/Library/Application Support/things-hub/.env (see .env.example).
 `
 

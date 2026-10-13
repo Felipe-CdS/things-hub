@@ -71,3 +71,8 @@ classroom-install: classroom-helper
 classroom-uninstall:
 	launchctl bootout gui/$$(id -u)/$(CLASSROOM_LABEL) 2>/dev/null || true
 	rm -f $(CLASSROOM_PLIST)
+
+# Installs the Mac tool, thub, into $(go env GOPATH)/bin.
+.PHONY: thub
+thub:
+	go install ./cmd/thub

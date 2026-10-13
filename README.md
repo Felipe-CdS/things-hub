@@ -11,6 +11,8 @@ Design: see the owner's wiki (`~/Docs/wiki/things-hub/DESIGN.md`).
 - `internal/store/`: SQLite storage, queue and lease logic. `internal/server/`: the HTTP API.
 - `cmd/thub-classroom/`, `internal/classroom/`: the Mac-side Classroom helper: the one-time Google login and read-only Classroom reads, printed as JSON. It can be folded into the Mac tool `thub` later.
 - `skills/things-hub-classroom/`: the Classroom skill. `scripts/classroom-routine.sh` and `launchd/` run it on a schedule with headless Claude Code.
+- `cmd/thub/`: the Mac tool (Go): pull, check, apply, undo, status and the event helpers. `internal/things/`: Things 3 through things-mcp, a read-only view of the Things database, and AppleScript or URL-scheme fallbacks; `internal/things/thingstest/`: an in-memory Things for tests. `internal/plan/`: the run files and plan validation. `internal/runner/`: pull, apply and undo. `internal/hub/`: the HTTP client. `internal/events/`: batch checks and the spool. `internal/macconf/`: the `.env` and local state.
+- `RUN.md`: the on-demand Mac run. `POLICY.md`: what the agent may do in Things, and the limits. `prompts/plan.md`: how the agent writes the plan. `skills/things-hub-github/`: the personal GitHub collector skill.
 - `docs/`: setup guides.
 
 ## Who produces events
@@ -50,6 +52,7 @@ The Makefile follows the same pattern as `Felipe-CdS/basement`; images are tagge
 | `make run` | `docker run -d` on `127.0.0.1:8787`, database in the `thub-data` volume, `.env` as environment if present |
 | `make dev` | `docker compose --profile hot up -d`: rebuilds and restarts on every Go change (air), database in `tmp/` |
 | `make test` | `go vet ./...`, `go test ./...`, and the Classroom routine script test |
+| `make thub` | Installs the Mac tool, `thub`, with `go install ./cmd/thub` |
 
 The image is distroless, runs as non-root, and `make run` adds a read-only root filesystem. Settings come from the environment:
 
@@ -97,3 +100,21 @@ Every route except `/healthz` needs `Authorization: Bearer thub_…`. Shapes are
 | `GET /healthz` | none | Liveness |
 
 Queue rules: a newer revision puts a done or parked item back to pending; an ack at an older revision than the stored one leaves the item pending; an expired lease's items can be pulled again, and the old lease may still ack an item no other lease took; three `failed` acks park an item until a newer revision arrives.
+
+## thub (the Mac tool)
+
+The Mac half of a run: the agent decides, `thub` applies. The steps are in `RUN.md`; the rules in `POLICY.md`.
+
+| Command | What it does |
+| --- | --- |
+| `thub doctor` | Checks the `.env`, the inbox, the `gh` login, things-mcp and the Things URL token (never printed) |
+| `thub pull --out <run>` | Takes the Things snapshot, settles crashed creates, refreshes the ledger, leases pending items, writes `input.json` |
+| `thub check <plan.json>` | Validates the plan: known uuids, areas, projects and tags; no second create for a linked key; only empty areas deleted; per-run limits |
+| `thub apply [--dry-run] <plan.json>` | Prints the diff, or applies: write-ahead ledger rows with markers, things-mcp writes, audit, ack and release |
+| `thub undo <run-id>` | Writes back the inverse of a run's changes, newest first |
+| `thub status [run]` | Queue counts, parked items, leases and a run's result |
+| `thub check-batch`, `post`, `flush`, `cursor`, `open` | Helpers for collector skills: validate and send event batches, read cursors and open items |
+
+Things writes go through things-mcp (`uvx things-mcp`, driven over stdio with the official Go MCP SDK); verified tool names are in `internal/things/mcp.go`. What things-mcp cannot do (create a tag, delete to the Trash, move a project to another area, bring an item back from the Trash) goes through AppleScript with an argv list, or the URL scheme with the token read from the Things database. Settings and secrets live in a mode-600 `.env` (keys in `.env.example`); there is no Keychain.
+
+Two changes from the design (owner, 2026-10-13): secrets are in the `.env`, not the macOS Keychain; and GitHub is collected by a skill the run's agent follows (`skills/things-hub-github/`), posting through `thub post`, instead of a Go `thub collect github`.

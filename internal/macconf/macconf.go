@@ -51,13 +51,11 @@ func (e *PermissionError) Error() string {
 	return fmt.Sprintf("%s has mode %04o and holds secrets: run chmod 600 %q", e.Path, e.Mode.Perm(), e.Path)
 }
 
-// envFile picks the .env: THUB_ENV_FILE, then ./.env, then <home>/.env.
+// envFile picks the .env: THUB_ENV_FILE, else <home>/.env. The repository's
+// own .env belongs to the server (make run), so thub never reads ./.env.
 func envFile(home string) string {
 	if p := os.Getenv("THUB_ENV_FILE"); p != "" {
 		return p
-	}
-	if _, err := os.Stat(".env"); err == nil {
-		return ".env"
 	}
 	return filepath.Join(home, ".env")
 }
