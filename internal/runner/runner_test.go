@@ -548,6 +548,52 @@ func TestUndoReversesNewestFirst(t *testing.T) {
 	}
 }
 
+// crashAfter runs method on the fake, then cancels the run's context and
+// fails it, the way a thub apply killed right after a write stops.
+type crashAfter struct {
+	*thingstest.Fake
+	cancel context.CancelFunc
+}
+
+func (c *crashAfter) Delete(ctx context.Context, uuid, typ string) error {
+	if err := c.Fake.Delete(ctx, uuid, typ); err != nil {
+		return err
+	}
+	c.cancel()
+	return thingstest.ErrCrash
+}
+
+func TestCrashAfterDeleteIsStillUndone(t *testing.T) {
+	e := newEnv(t)
+	trash := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Dup"})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{{Op: plan.OpDelete, UUID: trash, Reason: "duplicate"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.r.Things = &crashAfter{Fake: e.fake, cancel: cancel}
+	e.r.Apply(ctx, in, p, ApplyOptions{})
+	if it, _ := e.fake.Get(trash); !it.Trashed {
+		t.Fatal("the delete did not reach Things before the crash")
+	}
+
+	e.r.Things = e.fake
+	rep := e.apply(in, p, ApplyOptions{})
+	deletes := slices.DeleteFunc(e.fake.Writes(), func(w string) bool { return w != "Delete "+trash })
+	if rep.Ops[0].Status != StatusApplied || len(deletes) != 1 {
+		t.Fatalf("re-run report %+v writes %q", rep.Ops, e.fake.Writes())
+	}
+	steps, err := e.r.Undo(context.Background(), in.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Status != StatusApplied {
+		t.Fatalf("undo steps %+v", steps)
+	}
+	if it, _ := e.fake.Get(trash); it.Trashed {
+		t.Fatal("deleted to-do still in the Trash after undo")
+	}
+}
+
 func TestMissingTail(t *testing.T) {
 	for _, c := range []struct{ have, add, want []string }{
 		{nil, []string{"a", "b"}, []string{"a", "b"}},

@@ -257,9 +257,24 @@ func (s *applyState) target(t plan.Target) (string, error) {
 	return "", fmt.Errorf("its list is created by %s, which did not complete", t.Op)
 }
 
-// record stores the ledger rows and the applied op atomically, then the
-// audit entry, on the server and in the run folder.
+// record stores the audit entry, on the server and in the run folder, then
+// the ledger rows and the applied op atomically. The server keeps the first
+// audit entry per op, so a replay after a failed ledger write never doubles it.
 func (s *applyState) record(ctx context.Context, op plan.Op, rows []api.Thing, result string, detail any, audit *api.AuditEntry) error {
+	if audit != nil {
+		audit.RunID, audit.OpID, audit.At = s.runID, op.ID, s.r.Now().UTC()
+		if audit.Key == "" {
+			audit.Key = op.Key
+		}
+		if _, err := s.r.Hub.PostAudit(ctx, []api.AuditEntry{*audit}); err != nil {
+			return fmt.Errorf("audit %s: %w", op.ID, err)
+		}
+		if s.dir != "" {
+			if err := appendJSONL(filepath.Join(s.dir, "audit.jsonl"), audit); err != nil {
+				return err
+			}
+		}
+	}
 	req := api.LedgerPutRequest{Items: rows,
 		AppliedOps: []api.AppliedOp{{OpID: op.ID, RunID: s.runID, Result: result, Detail: mustJSON(detail)}}}
 	if _, err := s.r.Hub.PutLedger(ctx, req); err != nil {
@@ -270,19 +285,6 @@ func (s *applyState) record(ctx context.Context, op plan.Op, rows []api.Thing, r
 		if t.UUID != "" {
 			s.byUUID[t.UUID] = t
 		}
-	}
-	if audit == nil {
-		return nil
-	}
-	audit.RunID, audit.OpID, audit.At = s.runID, op.ID, s.r.Now().UTC()
-	if audit.Key == "" {
-		audit.Key = op.Key
-	}
-	if _, err := s.r.Hub.PostAudit(ctx, []api.AuditEntry{*audit}); err != nil {
-		return fmt.Errorf("audit %s: %w", op.ID, err)
-	}
-	if s.dir != "" {
-		return appendJSONL(filepath.Join(s.dir, "audit.jsonl"), audit)
 	}
 	return nil
 }
@@ -368,10 +370,11 @@ func (s *applyState) create(ctx context.Context, op plan.Op) (OpReport, error) {
 	row, retry := s.byOp[op.ID]
 	marker := row.Marker
 	if retry && row.UUID != "" {
-		// Settled since the crash: only the applied op is missing.
+		// Settled since the crash: only the applied op and its audit are missing.
 		or.UUID, or.Marker, or.Status = row.UUID, marker, StatusAlready
 		s.made[op.ID] = row.UUID
-		return or, s.record(ctx, op, nil, resultAlready, map[string]string{"uuid": row.UUID}, nil)
+		audit := &api.AuditEntry{Action: "create", ThingUUID: row.UUID, Marker: marker, ThingType: ledgerType(op.Type), After: row.Observed}
+		return or, s.record(ctx, op, nil, resultOK, map[string]string{"uuid": row.UUID, "marker": marker}, audit)
 	}
 	if !retry {
 		marker = things.NewMarker()
@@ -490,13 +493,16 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 	if err != nil {
 		return or, err
 	}
+	resumed := s.applied[op.ID] == resultStarted
+	if st == nil && resumed && op.Kind == plan.KindDeleteArea {
+		return or, s.landed(ctx, op, api.ThingGone)
+	}
 	if st == nil {
 		return or, fmt.Errorf("%s %s no longer exists", op.Type, op.UUID)
 	}
 	if op.Kind != plan.KindDelete && op.Kind != plan.KindDeleteArea && st.Trashed {
 		return or, fmt.Errorf("%s %s is in the Trash", op.Type, op.UUID)
 	}
-	resumed := s.applied[op.ID] == resultStarted
 	if !resumed && !s.wrote[op.UUID] && op.Before != nil && op.Before.Modified != "" && st.Modified != op.Before.Modified {
 		or.Status, or.Error = StatusSkipped, fmt.Sprintf("changed in Things since the snapshot (%s → %s); left for the next run", op.Before.Modified, st.Modified)
 		return or, nil
@@ -504,7 +510,6 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 
 	var already bool
 	state := api.ThingOpen
-	action := op.Kind
 	switch op.Kind {
 	case plan.KindComplete:
 		already, state = st.Status == things.StatusCompleted, api.ThingCompleted
@@ -527,6 +532,9 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 			return or, fmt.Errorf("area %s is not empty in Things (%d project(s) or to-do(s)); left in place", op.UUID, n)
 		}
 		state = api.ThingGone
+	}
+	if already && resumed {
+		return or, s.landed(ctx, op, state)
 	}
 	if already {
 		or.Status = StatusAlready
@@ -596,9 +604,23 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 	if err != nil {
 		return or, err
 	}
-	audit := &api.AuditEntry{Action: action, ThingUUID: op.UUID, ThingType: ledgerType(op.Type),
+	return or, s.recordChange(ctx, op, state, after)
+}
+
+// landed records a resumed op whose write reached Things before the crash
+// as a fresh write would, so undo reverses it.
+func (s *applyState) landed(ctx context.Context, op plan.Op, state string) error {
+	after := map[string]string{"state": state}
+	if op.Kind == plan.KindComplete || op.Kind == plan.KindCancel {
+		after = map[string]string{"status": state}
+	}
+	return s.recordChange(ctx, op, state, after)
+}
+
+func (s *applyState) recordChange(ctx context.Context, op plan.Op, state string, after any) error {
+	audit := &api.AuditEntry{Action: op.Kind, ThingUUID: op.UUID, ThingType: ledgerType(op.Type),
 		Before: mustJSON(op.Before), After: mustJSON(after)}
-	return or, s.record(ctx, op, []api.Thing{s.adopt(op.UUID, op.Type, state)}, resultOK, nil, audit)
+	return s.record(ctx, op, []api.Thing{s.adopt(op.UUID, op.Type, state)}, resultOK, nil, audit)
 }
 
 // waitStatus re-reads a completed or canceled item until Things shows it

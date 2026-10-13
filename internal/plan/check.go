@@ -172,6 +172,8 @@ type checker struct {
 	stopped    map[string]bool
 	// areaOf is the area each top-level item sits in, for empty-area checks.
 	areaOf map[string]string
+	// projectOf is the project each to-do sits in, directly or under a heading.
+	projectOf map[string]string
 	// headingProject maps a heading uuid to its project.
 	headingProject map[string]string
 	where          string
@@ -194,7 +196,7 @@ func Check(in *Input, p *Plan) *Result {
 	}
 	c := &checker{in: in, p: p, res: res, snap: snap, tags: map[string]string{},
 		deleted: map[string]bool{}, stopped: map[string]bool{}, areaOf: map[string]string{},
-		headingProject: map[string]string{}}
+		projectOf: map[string]string{}, headingProject: map[string]string{}}
 	for _, a := range snap.Areas {
 		c.containers = append(c.containers, container{Target{UUID: a.UUID}, things.TypeArea, a.Title})
 	}
@@ -214,6 +216,11 @@ func Check(in *Input, p *Plan) *Result {
 		for _, t := range list {
 			if t.Area != "" && t.Project == "" && t.Type == things.TypeTodo {
 				c.areaOf[t.UUID] = t.Area
+			}
+			if t.Project != "" {
+				c.projectOf[t.UUID] = t.Project
+			} else if p := c.headingProject[t.Heading]; p != "" {
+				c.projectOf[t.UUID] = p
 			}
 		}
 	}
@@ -630,7 +637,7 @@ func (c *checker) stop(op Op, it things.Item, why string, count func()) {
 		n := 0
 		for _, t := range c.snap.Todos {
 			if t.Status != things.StatusIncomplete || c.stopped[t.UUID] || c.deleted[t.UUID] ||
-				(t.Project != it.UUID && (t.Heading == "" || c.headingProject[t.Heading] != it.UUID)) {
+				c.projectOf[t.UUID] != it.UUID {
 				continue
 			}
 			n++
@@ -678,6 +685,11 @@ func (c *checker) trackMove(uuid string, t Target) {
 				c.areaOf[uuid] = k.UUID
 			} else {
 				delete(c.areaOf, uuid)
+			}
+			if k.Type == things.TypeProject && k.UUID != "" {
+				c.projectOf[uuid] = k.UUID
+			} else {
+				delete(c.projectOf, uuid)
 			}
 		}
 	}
@@ -893,6 +905,7 @@ func (c *checker) decision(id string, d Decision) {
 			}
 			ch = fch
 		}
+		c.trackMove(d.UUID, target)
 		op := Op{ID: id, Kind: KindUpdate, Key: d.Key, Role: api.RoleMerged, UUID: d.UUID, Type: it.Type,
 			Change: ch, List: target, Existing: true, Before: &it,
 			Describe: fmt.Sprintf("~ attach to %q", it.Title)}
@@ -943,7 +956,11 @@ func (c *checker) decision(id string, d Decision) {
 			if !ok {
 				continue
 			}
-			if it.Status != things.StatusIncomplete || c.stopped[u] {
+			if c.stopped[u] {
+				c.warnf("%s %q is already completed or canceled earlier in this plan; nothing to write", it.Type, it.Title)
+				continue
+			}
+			if it.Status != things.StatusIncomplete {
 				c.warnf("%s %q is already %s; nothing to write", it.Type, it.Title, it.Status)
 				continue
 			}

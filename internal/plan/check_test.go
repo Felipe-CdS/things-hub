@@ -299,6 +299,48 @@ func TestCompletingAProjectCompletesItsOpenTodosFirst(t *testing.T) {
 	}
 }
 
+func TestProjectChildrenFollowPlannedMoves(t *testing.T) {
+	in := input()
+	in.Snapshot.Todos = append(in.Snapshot.Todos,
+		things.Item{UUID: "STEP-1", Type: things.TypeTodo, Title: "Step", Project: "PROJ-1", Status: things.StatusIncomplete})
+	p := newPlan(in)
+	p.Organize = []Organize{
+		{Op: OpMove, UUID: "STEP-1", List: "Work"},
+		{Op: OpMove, UUID: "TODO-2", List: "Site"},
+		{Op: OpComplete, UUID: "PROJ-1"},
+	}
+	res := Check(in, p)
+	var got []string
+	for _, op := range res.Ops {
+		got = append(got, op.ID+" "+op.Kind+" "+op.UUID)
+	}
+	want := []string{
+		in.RunID + "/o1 update STEP-1",
+		in.RunID + "/o2 update TODO-2",
+		in.RunID + "/o3.c1 complete TODO-2",
+		in.RunID + "/o3 complete PROJ-1",
+	}
+	if !res.OK(false) || strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ops %q errors %q", got, res.Errors)
+	}
+}
+
+func TestResolveOfAnItemStoppedEarlierSaysSo(t *testing.T) {
+	in := input()
+	in.Items[0].Op = api.OpResolve
+	in.Items[0].Things = []api.LinkedThing{{Role: api.RolePrimary, UUID: "TODO-2", Type: api.ThingTodo, State: api.ThingOpen}}
+	p := newPlan(in)
+	p.Organize = []Organize{{Op: OpComplete, UUID: "TODO-2"}}
+	p.Items = []Decision{{Key: keyA, Action: ActResolve}}
+	res := Check(in, p)
+	if !res.OK(false) || len(res.Ops) != 1 {
+		t.Fatalf("ops %+v errors %q", res.Ops, res.Errors)
+	}
+	if w := strings.Join(res.Warnings, " "); !strings.Contains(w, "earlier in this plan") || strings.Contains(w, "already incomplete") {
+		t.Fatalf("warnings %q", res.Warnings)
+	}
+}
+
 func TestProjectStepsAndPolicyWarnings(t *testing.T) {
 	in := input()
 	p := newPlan(in)
