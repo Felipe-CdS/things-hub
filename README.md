@@ -9,6 +9,31 @@ Design: see the owner's wiki (`~/Docs/wiki/things-hub/DESIGN.md`).
 - `cmd/thub-server/`: the inbox server for the home server (Go, no LLM).
 - `api/`: wire types shared by the server and its clients: the event envelope and the pull, ack, ledger, audit, snapshot and status shapes.
 - `internal/store/`: SQLite storage, queue and lease logic. `internal/server/`: the HTTP API.
+- `cmd/thub-classroom/`, `internal/classroom/`: the Mac-side Classroom helper: the one-time Google login and read-only Classroom reads, printed as JSON. It can be folded into the Mac tool `thub` later.
+- `skills/things-hub-classroom/`: the Classroom skill. `scripts/classroom-routine.sh` and `launchd/` run it on a schedule with headless Claude Code.
+- `docs/`: setup guides.
+
+## Who produces events
+
+The server only receives, stores and hands out events; it never collects anything and holds no source credentials. Events come from:
+
+- the company notebook (Slack workspaces, org GitHub), through its collector skill;
+- the Mac: a scheduled Claude routine for Google Classroom, and the on-demand run's own sources.
+
+Organizing the events into Things stays on demand.
+
+## Classroom routine (Mac)
+
+A launchd job runs headless Claude Code every hour while the Mac is awake, on the owner's Claude login (never an API key), with the `things-hub-classroom` skill. The skill reads Classroom through `bin/thub-classroom` (read-only scopes) and posts `assignment` events with `thub-send`; a turned-in or returned submission resolves its item. Secrets live in the gitignored `.env` (mode 600; see `.env.example`).
+
+| Target | What it does |
+| --- | --- |
+| `make classroom-login` | Builds the helper and runs the one-time Google login in the browser; the refresh token goes into `.env` |
+| `make classroom-run` | One routine run now, in the foreground |
+| `make classroom-install` | Installs the launchd job (`CLASSROOM_INTERVAL`, seconds, default 3600) |
+| `make classroom-uninstall` | Removes it |
+
+Setup, from the Google Cloud project to the first run: [`docs/classroom-setup.md`](docs/classroom-setup.md).
 
 ## thub-server
 
@@ -24,7 +49,7 @@ The Makefile follows the same pattern as `Felipe-CdS/basement`; images are tagge
 | `make build-local` | Builds the image for this machine only and loads it locally, without pushing |
 | `make run` | `docker run -d` on `127.0.0.1:8787`, database in the `thub-data` volume, `.env` as environment if present |
 | `make dev` | `docker compose --profile hot up -d`: rebuilds and restarts on every Go change (air), database in `tmp/` |
-| `make test` | `go vet ./...` and `go test ./...` |
+| `make test` | `go vet ./...`, `go test ./...`, and the Classroom routine script test |
 
 The image is distroless, runs as non-root, and `make run` adds a read-only root filesystem. Settings come from the environment:
 
