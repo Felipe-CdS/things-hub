@@ -47,7 +47,8 @@ claude -p "$prompt" \
 	--strict-mcp-config \
 	--add-dir "$run" \
 	--allowedTools \
-	"Read" \
+	"Read(skills/things-hub-classroom/**)" \
+	"Read(/$run/**)" \
 	"Bash(date -u *)" \
 	"Bash($helper assignments)" \
 	"Bash($send flush)" \

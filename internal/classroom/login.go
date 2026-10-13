@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -18,8 +17,6 @@ import (
 
 // LoginOptions tunes Login.
 type LoginOptions struct {
-	// Port is the loopback port for the redirect; 0 picks a free one.
-	Port int
 	// Announcements adds the read-only announcements scope.
 	Announcements bool
 	// OpenBrowser opens the consent page; nil only prints its URL.
@@ -44,7 +41,7 @@ func Login(ctx context.Context, cfg Config, opts LoginOptions) (*oauth2.Token, e
 	if opts.Timeout == 0 {
 		opts.Timeout = 10 * time.Minute
 	}
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.Port)))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for the login redirect: %w", err)
 	}

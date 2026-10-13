@@ -45,8 +45,8 @@ func TestSettingsErrors(t *testing.T) {
 	if err := a.run(ctx, []string{"assignments"}); err == nil || !strings.Contains(err.Error(), "thub-classroom login") {
 		t.Fatalf("missing refresh token: %v", err)
 	}
-	if err := a.run(ctx, []string{"coursework"}); err == nil {
-		t.Fatal("coursework without a course id succeeded")
+	if err := a.run(ctx, []string{"courses"}); err == nil {
+		t.Fatal("removed courses command succeeded")
 	}
 	if err := a.run(ctx, []string{"post"}); err == nil {
 		t.Fatal("unknown command succeeded")

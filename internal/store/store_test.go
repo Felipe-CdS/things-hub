@@ -232,6 +232,51 @@ func TestOpenAndResolve(t *testing.T) {
 	}
 }
 
+func TestClassroomArchiveThenUnarchive(t *testing.T) {
+	st, _ := newStore(t)
+	token, err := st.AddSender(ctx, "mac", true, []Scope{{Source: "classroom", Account: "university"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := st.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const updateTime = "2026-10-05T09:00:00Z"
+	event := func(op, revision string) api.Event {
+		e := api.Event{Source: "classroom", Account: "university", Kind: "assignment", SourceID: "c1/w1",
+			Op: op, Revision: revision, ObservedAt: revision}
+		if op == "upsert" {
+			e.URL, e.Title = "https://classroom.google.com/c/MTIz/a/OTg3/details", "Turn in Lista 3 (Cálculo I)"
+		}
+		return e
+	}
+	isOpen := func() bool {
+		t.Helper()
+		open, err := st.Open(ctx, s, "classroom", "university")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(open.Items) == 1 && open.Items[0].SourceID == "c1/w1"
+	}
+
+	wantResults(t, ingest(t, st, s, nil, event("upsert", "2026-10-06T12:00:00Z")), api.ResultAccepted)
+	wantResults(t, ingest(t, st, s, nil, event("upsert", "2026-10-06T12:00:00Z")), api.ResultDuplicate)
+	wantResults(t, ingest(t, st, s, nil, event("resolve", "2026-10-08T12:00:00Z")), api.ResultAccepted)
+	if isOpen() {
+		t.Fatal("archived work still open")
+	}
+	wantResults(t, ingest(t, st, s, nil, event("upsert", updateTime)), api.ResultStale)
+	wantResults(t, ingest(t, st, s, nil, event("upsert", "2026-10-09T12:00:00Z")), api.ResultAccepted)
+	if !isOpen() {
+		t.Fatal("unarchived work not open again")
+	}
+	wantResults(t, ingest(t, st, s, nil, event("resolve", "2026-10-10T12:00:00Z")), api.ResultAccepted)
+	if isOpen() {
+		t.Fatal("turned-in work still open")
+	}
+}
+
 func TestLeaseExpiryAndRepull(t *testing.T) {
 	st, c := newStore(t)
 	s := mac(t, st)

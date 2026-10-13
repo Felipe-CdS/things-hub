@@ -25,14 +25,11 @@ import (
 const usage = `usage: thub-classroom <command>
 
 commands:
-  login [--port N] [--announcements] [--no-browser]
+  login [--announcements] [--no-browser]
                          log in to Google once in the browser and store the
                          refresh token in the env file
   assignments            every published coursework of the active courses,
                          joined with your submission (what the skill reads)
-  courses                your active courses, as the API returns them
-  coursework <courseId>  a course's published coursework
-  submissions <courseId> your submissions in a course
 
 settings (environment, or the env file ${THUB_ENV_FILE:-.env}, mode 600):
   THUB_GOOGLE_CLIENT_ID         the Desktop app OAuth client id
@@ -111,27 +108,6 @@ func (a *app) run(ctx context.Context, args []string) error {
 			return err
 		}
 		return a.print(res)
-	case "courses":
-		if len(args) != 0 {
-			return errors.New("courses takes no arguments")
-		}
-		c, err := a.client(ctx)
-		if err != nil {
-			return err
-		}
-		return a.printList(c.Courses(ctx))
-	case "coursework", "submissions":
-		if len(args) != 1 || args[0] == "" {
-			return fmt.Errorf("%s needs exactly one course id", cmd)
-		}
-		c, err := a.client(ctx)
-		if err != nil {
-			return err
-		}
-		if cmd == "coursework" {
-			return a.printList(c.CourseWork(ctx, args[0]))
-		}
-		return a.printList(c.Submissions(ctx, args[0]))
 	case "help", "-h", "--help":
 		fmt.Fprint(a.out, usage)
 		return nil
@@ -156,16 +132,8 @@ func (a *app) print(v any) error {
 	return enc.Encode(v)
 }
 
-func (a *app) printList(items []json.RawMessage, err error) error {
-	if err != nil {
-		return err
-	}
-	return a.print(items)
-}
-
 func (a *app) login(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	port := fs.Int("port", 0, "loopback port for the redirect (default: any free port)")
 	ann := fs.Bool("announcements", false, "also ask for read-only access to announcements")
 	noBrowser := fs.Bool("no-browser", false, "only print the login page's URL")
 	if err := fs.Parse(args); err != nil {
@@ -174,7 +142,7 @@ func (a *app) login(ctx context.Context, args []string) error {
 	if fs.NArg() != 0 {
 		return errors.New("login takes no arguments")
 	}
-	opts := classroom.LoginOptions{Port: *port, Announcements: *ann, Out: a.out, OpenBrowser: a.openBrowser}
+	opts := classroom.LoginOptions{Announcements: *ann, Out: a.out, OpenBrowser: a.openBrowser}
 	if *noBrowser {
 		opts.OpenBrowser = nil
 	}
