@@ -44,7 +44,7 @@ Rules `thub check` enforces: no `create` or `project` for a key whose `things` h
 | `move` | `uuid` of a to-do, `list` |
 | `move_project` | `uuid`, `area` |
 | `update` | `uuid` of a to-do or project, `fields` |
-| `complete`, `cancel` | `uuid` |
+| `complete`, `cancel` | `uuid` (a project's open to-dos are completed or canceled with it) |
 | `delete` | `uuid` of a to-do or project, `reason` (goes to the Trash) |
 
 There is no way to empty the Trash.

@@ -150,6 +150,8 @@ type State struct {
 	Trashed   bool
 	Modified  string
 	Checklist []string
+	// Contents counts an area's untrashed projects and to-dos, any status.
+	Contents int
 }
 
 // NewTodo is a to-do to create. Notes carry the marker.

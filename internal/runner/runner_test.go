@@ -350,6 +350,120 @@ func TestResolvedGitHubItemCompletesItsTodo(t *testing.T) {
 	}
 }
 
+func TestResolvedProjectCompletesItsStepsFirst(t *testing.T) {
+	e := newEnv(t)
+	key := e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T10:00:00Z", api.OpUpsert)
+	in := e.pull(false)
+	p := newPlan(in)
+	p.Items = []plan.Decision{{Key: key, Action: plan.ActProject, Project: &plan.Project{Title: "Ship mic#12"},
+		Todos: []plan.Todo{{Title: "Read"}, {Title: "Test"}, {Title: "Approve"}}}}
+	var made []string
+	for _, o := range e.apply(in, p, ApplyOptions{}).Ops {
+		made = append(made, o.UUID)
+	}
+
+	e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T12:00:00Z", api.OpResolve)
+	in = e.pull(false)
+	p = newPlan(in)
+	p.Items = []plan.Decision{{Key: key, Action: plan.ActResolve}}
+	rep := e.apply(in, p, ApplyOptions{})
+	for _, u := range made {
+		if got, _ := e.fake.Get(u); got.Status != things.StatusCompleted {
+			t.Fatalf("%s %q is %s after resolve; report %+v", got.Type, got.Title, got.Status, rep.Ops)
+		}
+	}
+	if rep.Acks[0].Result != api.AckOK || rep.Acks[0].State != api.StateDone {
+		t.Fatalf("ack %+v", rep.Acks)
+	}
+}
+
+func TestProjectThatStaysOpenFailsItsResolve(t *testing.T) {
+	e := newEnv(t)
+	key := e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T10:00:00Z", api.OpUpsert)
+	in := e.pull(false)
+	p := newPlan(in)
+	p.Items = []plan.Decision{{Key: key, Action: plan.ActProject, Project: &plan.Project{Title: "Ship mic#12"},
+		Todos: []plan.Todo{{Title: "Read"}}}}
+	proj := e.apply(in, p, ApplyOptions{}).Ops[0].UUID
+
+	e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T12:00:00Z", api.OpResolve)
+	in = e.pull(false)
+	// A to-do added after the snapshot keeps Things from completing it.
+	e.fake.Put(things.Item{Type: things.TypeTodo, Title: "New step", Project: proj})
+	p = newPlan(in)
+	p.Items = []plan.Decision{{Key: key, Action: plan.ActResolve}}
+	rep := e.apply(in, p, ApplyOptions{})
+	if got, _ := e.fake.Get(proj); got.Status != things.StatusIncomplete {
+		t.Fatalf("project is %s", got.Status)
+	}
+	if last := rep.Ops[len(rep.Ops)-1]; last.Status != StatusFailed {
+		t.Fatalf("project op %+v", last)
+	}
+	if rep.Acks[0].State == api.StateDone {
+		t.Fatalf("a project left open was acked resolved: %+v", rep.Acks)
+	}
+}
+
+func TestDeleteAreaRefusedWhenThingsStillHoldsContents(t *testing.T) {
+	e := newEnv(t)
+	area := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Old"})
+	// A project completed long ago: not among the snapshot's open projects.
+	e.fake.Put(things.Item{Type: things.TypeProject, Title: "Done long ago", Area: area, Status: things.StatusCompleted})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{{Op: plan.OpDeleteArea, UUID: area, Reason: "unused"}}
+	rep := e.apply(in, p, ApplyOptions{})
+	if rep.Ops[0].Status != StatusFailed {
+		t.Fatalf("report %+v", rep.Ops)
+	}
+	if _, ok := e.fake.Get(area); !ok || slices.Contains(e.fake.Writes(), "Delete "+area) {
+		t.Fatal("a non-empty area was deleted")
+	}
+}
+
+func TestRetryWaitsForAnInFlightCreate(t *testing.T) {
+	e := newEnv(t)
+	key := e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T10:00:00Z", api.OpUpsert)
+	in := e.pull(false)
+	p := newPlan(in)
+	p.Items = []plan.Decision{createDecision(key)}
+	ctx, cancel := context.WithCancel(context.Background())
+	crashOn(e.fake, "FindByMarker", cancel)
+	e.fake.HideWrites = 3
+	e.r.Apply(ctx, in, p, ApplyOptions{})
+
+	// Things shows the write only after a few more searches.
+	e.r.FindTimeout = time.Hour
+	e.r.Now = func() time.Time { e.now = e.now.Add(time.Second); return e.now }
+	rep := e.apply(in, p, ApplyOptions{})
+	if n := e.fake.Count(things.TypeTodo); n != 1 {
+		t.Fatalf("%d to-dos after re-run, want 1", n)
+	}
+	if rep.Ops[0].Status != StatusAlready {
+		t.Fatalf("report %+v", rep.Ops)
+	}
+}
+
+func TestSecondChangeToTheSameItemIsNotSkipped(t *testing.T) {
+	e := newEnv(t)
+	e.fake.Put(things.Item{Type: things.TypeArea, Title: "Home"})
+	todo := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Mine"})
+	key := e.post("assigned", "felipe-cds/mic#7", "2026-10-13T10:00:00Z", api.OpUpsert)
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{{Op: plan.OpMove, UUID: todo, List: "Home"}}
+	p.Items = []plan.Decision{{Key: key, Action: plan.ActUpdate, UUID: todo, Fields: &plan.Fields{Deadline: ptr("2026-10-30")}}}
+	rep := e.apply(in, p, ApplyOptions{})
+	for _, o := range rep.Ops {
+		if o.Status != StatusApplied {
+			t.Fatalf("report %+v", rep.Ops)
+		}
+	}
+	if got, _ := e.fake.Get(todo); got.Deadline != "2026-10-30" || got.Area == "" {
+		t.Fatalf("to-do %+v", got)
+	}
+}
+
 func TestUndoReversesNewestFirst(t *testing.T) {
 	e := newEnv(t)
 	work := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Work"})

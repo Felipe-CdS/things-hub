@@ -248,6 +248,57 @@ func TestOtherLimits(t *testing.T) {
 	}
 }
 
+func TestOrganizeCompletionsCountAsMoves(t *testing.T) {
+	in := input()
+	in.Items[0].Op = api.OpResolve
+	in.Items[0].Things = []api.LinkedThing{{Role: api.RolePrimary, UUID: "TODO-2", Type: api.ThingTodo, State: api.ThingOpen}}
+	p := newPlan(in)
+	for i := range 51 {
+		u := fmt.Sprintf("OLD-%d", i)
+		in.Snapshot.Todos = append(in.Snapshot.Todos, things.Item{UUID: u, Type: things.TypeTodo, Title: u, Status: things.StatusIncomplete})
+		p.Organize = append(p.Organize, Organize{Op: OpCancel, UUID: u})
+	}
+	p.Items = []Decision{{Key: keyA, Action: ActResolve}}
+	res := Check(in, p)
+	if len(res.Errors) != 0 || res.OK(false) || len(res.OverLimits) != 1 ||
+		!strings.Contains(res.OverLimits[0], "moves and changes of existing items: 51, limit 50") {
+		t.Fatalf("errors %q over %q", res.Errors, res.OverLimits)
+	}
+	if res.Counts.Completes != 1 {
+		t.Fatalf("source-driven resolve not counted apart: %+v", res.Counts)
+	}
+}
+
+func TestCompletingAProjectCompletesItsOpenTodosFirst(t *testing.T) {
+	in := input()
+	in.Snapshot.Todos = append(in.Snapshot.Todos,
+		things.Item{UUID: "STEP-1", Type: things.TypeTodo, Title: "Step", Project: "PROJ-1", Status: things.StatusIncomplete},
+		things.Item{UUID: "STEP-2", Type: things.TypeTodo, Title: "Later step", Heading: "HEAD-1", Status: things.StatusIncomplete})
+	in.Items[0].Op = api.OpResolve
+	in.Items[0].Things = []api.LinkedThing{
+		{Role: api.RolePrimary, UUID: "PROJ-1", Type: api.ThingProject, State: api.ThingOpen},
+		{Role: api.RoleChild, UUID: "STEP-1", Type: api.ThingTodo, State: api.ThingOpen},
+	}
+	p := newPlan(in)
+	p.Items = []Decision{{Key: keyA, Action: ActResolve}}
+	res := Check(in, p)
+	var got []string
+	for _, op := range res.Ops {
+		got = append(got, op.ID+" "+op.Kind+" "+op.UUID+" "+op.Role)
+	}
+	want := []string{
+		in.RunID + "/i1.c1 complete STEP-1 child",
+		in.RunID + "/i1.c2 complete STEP-2 child",
+		in.RunID + "/i1 complete PROJ-1 primary",
+	}
+	if !res.OK(false) || strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ops %q errors %q", got, res.Errors)
+	}
+	if len(res.Answers) != 1 || len(res.Answers[0].Ops) != 3 {
+		t.Fatalf("answers %+v", res.Answers)
+	}
+}
+
 func TestProjectStepsAndPolicyWarnings(t *testing.T) {
 	in := input()
 	p := newPlan(in)

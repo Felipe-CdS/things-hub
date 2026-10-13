@@ -101,7 +101,12 @@ FROM TMTask WHERE uuid = ?`, uuid).Scan(&typ, &status, &trashed, &modified)
 		if n == 0 {
 			return nil, nil
 		}
-		return &State{UUID: uuid, Type: TypeArea, Status: StatusIncomplete}, nil
+		st := &State{UUID: uuid, Type: TypeArea, Status: StatusIncomplete}
+		err = d.db.QueryRowContext(ctx, `SELECT count(*) FROM TMTask WHERE area = ? AND trashed = 0`, uuid).Scan(&st.Contents)
+		if err != nil {
+			return nil, fmt.Errorf("look up %s: %w", uuid, err)
+		}
+		return st, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("look up %s: %w", uuid, err)

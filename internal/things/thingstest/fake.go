@@ -210,8 +210,16 @@ func (f *Fake) Lookup(_ context.Context, uuid string) (*things.State, error) {
 	if !ok {
 		return nil, nil
 	}
-	return &things.State{UUID: uuid, Type: it.Type, Status: it.Status, Trashed: it.Trashed,
-		Modified: it.Modified, Checklist: it.ChecklistTitles()}, nil
+	st := &things.State{UUID: uuid, Type: it.Type, Status: it.Status, Trashed: it.Trashed,
+		Modified: it.Modified, Checklist: it.ChecklistTitles()}
+	if it.Type == things.TypeArea {
+		for _, o := range f.items {
+			if o.Area == uuid && !o.Trashed {
+				st.Contents++
+			}
+		}
+	}
+	return st, nil
 }
 
 // Areas lists areas.
@@ -332,13 +340,17 @@ func (f *Fake) update(method, uuid string, c things.Change) error {
 	for _, t := range c.AppendChecklist {
 		it.Checklist = append(it.Checklist, things.ChecklistItem{Title: t, Status: things.StatusIncomplete})
 	}
-	if c.Completed != nil {
+	// Like Things, completing or canceling a project with open to-dos is
+	// ignored.
+	stopsOpenProject := it.Type == things.TypeProject && f.hasOpenTodos(uuid) &&
+		((c.Completed != nil && *c.Completed) || (c.Canceled != nil && *c.Canceled))
+	if c.Completed != nil && !stopsOpenProject {
 		it.Status = things.StatusIncomplete
 		if *c.Completed {
 			it.Status = things.StatusCompleted
 		}
 	}
-	if c.Canceled != nil {
+	if c.Canceled != nil && !stopsOpenProject {
 		it.Status = things.StatusIncomplete
 		if *c.Canceled {
 			it.Status = things.StatusCanceled
@@ -347,6 +359,15 @@ func (f *Fake) update(method, uuid string, c things.Change) error {
 	it.Modified = f.tick()
 	f.record("%s %s %s", method, uuid, describe(c))
 	return nil
+}
+
+func (f *Fake) hasOpenTodos(project string) bool {
+	for _, it := range f.items {
+		if it.Type == things.TypeTodo && it.Project == project && !it.Trashed && it.Status == things.StatusIncomplete {
+			return true
+		}
+	}
+	return false
 }
 
 func describe(c things.Change) string {

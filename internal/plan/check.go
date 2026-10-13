@@ -39,7 +39,8 @@ func (t Target) IsZero() bool { return t.UUID == "" && t.Op == "" }
 // Op is one Things write thub apply carries out.
 type Op struct {
 	// ID is <run-id>/o<n> for organize[n-1], <run-id>/i<n> for items[n-1]
-	// and <run-id>/i<n>.<k> for the k-th step of a new project.
+	// and <run-id>/i<n>.<k> for the k-th step of a new project; .c<n>
+	// suffixes the n-th open to-do completed or canceled with its project.
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	// Key and Role link the written item to a source key.
@@ -589,15 +590,11 @@ func (c *checker) organize(id string, o Organize) {
 			c.errf("%s %q is not open", it.Type, it.Title)
 			return
 		}
-		c.stopped[o.UUID] = true
-		c.res.ReorganizesLayout = true
-		c.res.Counts.Completes++
-		kind, sign := KindComplete, "✓ complete"
+		kind := KindComplete
 		if o.Op == OpCancel {
-			kind, sign = KindCancel, "⊘ cancel"
+			kind = KindCancel
 		}
-		c.add(Op{ID: id, Kind: kind, UUID: o.UUID, Type: it.Type, Existing: true, Before: &it,
-			Describe: fmt.Sprintf("%s %s %q%s", sign, it.Type, it.Title, because(o.Reason))})
+		c.stop(Op{ID: id, Kind: kind}, it, because(o.Reason), c.existingChange)
 	case OpDelete:
 		it, ok := c.existing(o.UUID, things.TypeTodo, things.TypeProject)
 		if !ok {
@@ -618,6 +615,41 @@ func (c *checker) organize(id string, o Organize) {
 	default:
 		c.errf("unknown op %q", o.Op)
 	}
+}
+
+// stop adds op, a complete or cancel of the open item it, with count
+// called once per item it stops. Things ignores completing or canceling a
+// project that still has open to-dos, so a project's open to-dos are
+// stopped first, as ops <op id>.c<n> linked to the same key as children.
+func (c *checker) stop(op Op, it things.Item, why string, count func()) {
+	sign := "✓ complete"
+	if op.Kind == KindCancel {
+		sign = "⊘ cancel"
+	}
+	if it.Type == things.TypeProject {
+		n := 0
+		for _, t := range c.snap.Todos {
+			if t.Status != things.StatusIncomplete || c.stopped[t.UUID] || c.deleted[t.UUID] ||
+				(t.Project != it.UUID && (t.Heading == "" || c.headingProject[t.Heading] != it.UUID)) {
+				continue
+			}
+			n++
+			c.stopped[t.UUID] = true
+			count()
+			child := op
+			child.ID, child.UUID, child.Type, child.Existing, child.Before = fmt.Sprintf("%s.c%d", op.ID, n), t.UUID, t.Type, true, &t
+			if child.Key != "" {
+				child.Role = api.RoleChild
+			}
+			child.Describe = fmt.Sprintf("%s %s %q in project %q%s", sign, t.Type, t.Title, it.Title, why)
+			c.add(child)
+		}
+	}
+	c.stopped[it.UUID] = true
+	count()
+	op.UUID, op.Type, op.Existing, op.Before = it.UUID, it.Type, true, &it
+	op.Describe = fmt.Sprintf("%s %s %q%s", sign, it.Type, it.Title, why)
+	c.add(op)
 }
 
 // existingChange counts a move or change of an item that existed before
@@ -902,9 +934,9 @@ func (c *checker) decision(id string, d Decision) {
 				return
 			}
 		}
-		kind, sign := KindComplete, "✓ complete"
+		kind := KindComplete
 		if d.Cancel {
-			kind, sign = KindCancel, "⊘ cancel"
+			kind = KindCancel
 		}
 		for k, u := range uuids {
 			it, ok := c.existing(u, things.TypeTodo, things.TypeProject)
@@ -915,14 +947,12 @@ func (c *checker) decision(id string, d Decision) {
 				c.warnf("%s %q is already %s; nothing to write", it.Type, it.Title, it.Status)
 				continue
 			}
-			c.stopped[u] = true
-			c.res.Counts.Completes++
 			opID := id
 			if len(uuids) > 1 {
 				opID = fmt.Sprintf("%s.%d", id, k+1)
 			}
-			c.add(Op{ID: opID, Kind: kind, Key: d.Key, Role: api.RolePrimary, UUID: u, Type: it.Type,
-				Existing: true, Before: &it, Describe: fmt.Sprintf("%s %s %q (source resolved)", sign, it.Type, it.Title)})
+			c.stop(Op{ID: opID, Kind: kind, Key: d.Key, Role: api.RolePrimary}, it, " (source resolved)",
+				func() { c.res.Counts.Completes++ })
 		}
 	case ActIgnore:
 		if strings.TrimSpace(d.Reason) == "" {

@@ -107,6 +107,9 @@ type applyState struct {
 	made map[string]string
 	// outcome per op id: done, skipped (conflict) or failed with an error.
 	status map[string]OpReport
+	// wrote holds the existing items this run already changed, whose
+	// modified time no longer matches the snapshot.
+	wrote map[string]bool
 }
 
 // Apply checks the plan and, unless DryRun, carries it out.
@@ -138,7 +141,7 @@ func (r *Runner) Apply(ctx context.Context, in *plan.Input, p *plan.Plan, o Appl
 	}
 	s := &applyState{r: r, runID: p.RunID, dir: o.Dir, applied: map[string]string{},
 		byUUID: map[string]api.Thing{}, byOp: map[string]api.Thing{}, made: map[string]string{},
-		status: map[string]OpReport{}}
+		status: map[string]OpReport{}, wrote: map[string]bool{}}
 	for _, a := range led.AppliedOps {
 		s.applied[a.OpID] = a.Result
 	}
@@ -160,6 +163,9 @@ func (r *Runner) Apply(ctx context.Context, in *plan.Input, p *plan.Plan, o Appl
 		}
 		or := s.run(ctx, op)
 		s.status[op.ID] = or
+		if op.Existing && (or.Status == StatusApplied || or.Status == StatusReplayed) {
+			s.wrote[op.UUID] = true
+		}
 		rep.Ops = append(rep.Ops, or)
 		r.printf("%-9s %s\n", or.Status, op.Describe)
 		if or.Error != "" {
@@ -320,24 +326,35 @@ func (s *applyState) run(ctx context.Context, op plan.Op) OpReport {
 	return or
 }
 
-// findMarker polls for a marker until FindTimeout, since Things writes
-// asynchronously.
-func (s *applyState) findMarker(ctx context.Context, marker string) (*things.Item, error) {
+// poll calls try until it reports done or FindTimeout passes, since Things
+// writes asynchronously.
+func (s *applyState) poll(ctx context.Context, try func() (bool, error)) (bool, error) {
 	deadline := s.r.Now().Add(s.r.FindTimeout)
 	for {
-		it, err := s.r.Things.FindByMarker(ctx, marker)
-		if err != nil || it != nil {
-			return it, err
+		done, err := try()
+		if err != nil || done {
+			return done, err
 		}
 		if !s.r.Now().Before(deadline) {
-			return nil, nil
+			return false, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return false, ctx.Err()
 		case <-time.After(s.r.FindInterval):
 		}
 	}
+}
+
+// findMarker polls for a marker until FindTimeout.
+func (s *applyState) findMarker(ctx context.Context, marker string) (*things.Item, error) {
+	var it *things.Item
+	_, err := s.poll(ctx, func() (bool, error) {
+		var err error
+		it, err = s.r.Things.FindByMarker(ctx, marker)
+		return it != nil, err
+	})
+	return it, err
 }
 
 // create writes a to-do or project with a marker: write-ahead to the
@@ -367,7 +384,7 @@ func (s *applyState) create(ctx context.Context, op plan.Op) (OpReport, error) {
 			return or, fmt.Errorf("write-ahead: %w", err)
 		}
 		s.byOp[op.ID] = ahead
-	} else if it, err := s.r.Things.FindByMarker(ctx, marker); err != nil {
+	} else if it, err := s.findMarker(ctx, marker); err != nil {
 		return or, err
 	} else if it != nil {
 		return s.created(ctx, op, marker, it, StatusAlready)
@@ -480,7 +497,7 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 		return or, fmt.Errorf("%s %s is in the Trash", op.Type, op.UUID)
 	}
 	resumed := s.applied[op.ID] == resultStarted
-	if !resumed && op.Before != nil && op.Before.Modified != "" && st.Modified != op.Before.Modified {
+	if !resumed && !s.wrote[op.UUID] && op.Before != nil && op.Before.Modified != "" && st.Modified != op.Before.Modified {
 		or.Status, or.Error = StatusSkipped, fmt.Sprintf("changed in Things since the snapshot (%s → %s); left for the next run", op.Before.Modified, st.Modified)
 		return or, nil
 	}
@@ -496,6 +513,9 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 	case plan.KindDelete:
 		already, state = st.Trashed, api.ThingTrashed
 	case plan.KindDeleteArea:
+		if st.Contents > 0 {
+			return or, fmt.Errorf("area %s is not empty in Things (%d project(s) or to-do(s)); left in place", op.UUID, st.Contents)
+		}
 		state = api.ThingGone
 	}
 	if already {
@@ -543,6 +563,9 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 		} else {
 			err = s.r.Things.UpdateTodo(ctx, op.UUID, ch)
 		}
+		if err == nil {
+			err = s.waitStatus(ctx, op, state)
+		}
 		after = map[string]string{"status": state}
 	case plan.KindDelete, plan.KindDeleteArea:
 		err = s.r.Things.Delete(ctx, op.UUID, op.Type)
@@ -566,6 +589,27 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 	audit := &api.AuditEntry{Action: action, ThingUUID: op.UUID, ThingType: ledgerType(op.Type),
 		Before: mustJSON(op.Before), After: mustJSON(after)}
 	return or, s.record(ctx, op, []api.Thing{s.adopt(op.UUID, op.Type, state)}, resultOK, nil, audit)
+}
+
+// waitStatus re-reads a completed or canceled item until Things shows it
+// so: Things ignores the write for a project that still has open to-dos.
+func (s *applyState) waitStatus(ctx context.Context, op plan.Op, state string) error {
+	want := things.StatusCompleted
+	if state == api.ThingCanceled {
+		want = things.StatusCanceled
+	}
+	var got string
+	ok, err := s.poll(ctx, func() (bool, error) {
+		st, err := s.r.Things.Lookup(ctx, op.UUID)
+		if st != nil {
+			got = st.Status
+		}
+		return got == want, err
+	})
+	if err != nil || ok {
+		return err
+	}
+	return fmt.Errorf("%s %s is still %s in Things after the write (open to-dos added since the snapshot?)", op.Type, op.UUID, got)
 }
 
 // missingTail drops the items an earlier, interrupted apply already
