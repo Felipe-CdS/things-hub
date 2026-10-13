@@ -808,7 +808,7 @@ func (c *checker) decision(id string, d Decision) {
 	}
 	creates := d.Action == ActCreate || d.Action == ActProject
 	if creates && len(linked) > 0 {
-		c.errf("key already has a live Things item (%s); attach, update or resolve it instead", linked[0].UUID+linked[0].Marker)
+		c.errf("key already has a live Things item (%s); attach, update or resolve it instead", linked[0].UUID+" "+linked[0].Marker)
 		return
 	}
 	if creates && item.Op == api.OpResolve {

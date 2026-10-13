@@ -48,6 +48,20 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 	for _, a := range led.AppliedOps {
 		applied[a.OpID] = a.Result == resultOK || a.Result == resultAlready
 	}
+	// Areas this undo recreated under a new uuid, so earlier moves out of
+	// them go back into the new area. A resumed undo reads them back from
+	// its own audit.
+	areas := map[string]string{}
+	prev, err := r.Hub.Audit(ctx, undoRun)
+	if err != nil {
+		return nil, fmt.Errorf("read audit of %s: %w", undoRun, err)
+	}
+	for _, pe := range prev.Entries {
+		var out struct{ UUID string }
+		if pe.Action == "undo_"+plan.KindDeleteArea && json.Unmarshal(pe.After, &out) == nil && out.UUID != "" {
+			areas[pe.ThingUUID] = out.UUID
+		}
+	}
 	entries := slices.Clone(log.Entries)
 	slices.SortFunc(entries, func(a, b api.AuditEntry) int { return int(b.Seq - a.Seq) })
 
@@ -60,7 +74,7 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 			steps = append(steps, step)
 			continue
 		}
-		after, state, err := r.inverse(ctx, e, &step)
+		after, state, err := r.inverse(ctx, e, &step, areas)
 		if err != nil {
 			step.Status, step.Error = StatusFailed, err.Error()
 			r.printf("%-9s %s\n          %s\n", step.Status, step.Describe, step.Error)
@@ -144,12 +158,15 @@ func restoreChange(ch things.Change, before things.Item) things.Change {
 
 // inverse writes the inverse of one audit entry and returns what it wrote
 // and the item's new ledger state.
-func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep) (any, string, error) {
+func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep, areas map[string]string) (any, string, error) {
 	var before things.Item
 	if len(e.Before) > 0 && string(e.Before) != "null" {
 		if err := json.Unmarshal(e.Before, &before); err != nil {
 			return nil, "", fmt.Errorf("decode before: %w", err)
 		}
+	}
+	if a, ok := areas[before.Area]; ok && e.Action != plan.KindDeleteArea {
+		before.Area = a
 	}
 	typ := before.Type
 	if typ == "" {
@@ -222,6 +239,9 @@ func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep) 
 	case plan.KindDeleteArea:
 		step.Describe = fmt.Sprintf("+ recreate area %q (new uuid; its contents were moved before)", before.Title)
 		uuid, err := r.Things.AddArea(ctx, before.Title)
+		if err == nil && uuid != "" {
+			areas[e.ThingUUID] = uuid
+		}
 		return map[string]string{"uuid": uuid}, "", err
 	}
 	return nil, "", fmt.Errorf("no inverse for action %q", e.Action)

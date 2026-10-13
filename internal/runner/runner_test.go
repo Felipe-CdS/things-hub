@@ -548,6 +548,43 @@ func TestUndoReversesNewestFirst(t *testing.T) {
 	}
 }
 
+func TestUndoPutsContentsBackIntoARecreatedArea(t *testing.T) {
+	e := newEnv(t)
+	old := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Old"})
+	work := e.fake.Put(things.Item{Type: things.TypeArea, Title: "Work"})
+	todo := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Keep", Area: old})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{
+		{Op: plan.OpMove, UUID: todo, List: "Work"},
+		{Op: plan.OpDeleteArea, UUID: old, Reason: "unused"},
+	}
+	rep := e.apply(in, p, ApplyOptions{})
+	for _, o := range rep.Ops {
+		if o.Status != StatusApplied {
+			t.Fatalf("report %+v", rep.Ops)
+		}
+	}
+	if it, _ := e.fake.Get(todo); it.Area != work {
+		t.Fatalf("to-do not moved: %+v", it)
+	}
+
+	steps, err := e.r.Undo(context.Background(), in.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range steps {
+		if s.Status != StatusApplied {
+			t.Fatalf("undo step %+v", s)
+		}
+	}
+	it, _ := e.fake.Get(todo)
+	area, ok := e.fake.Get(it.Area)
+	if !ok || it.Area == old || area.Type != things.TypeArea || area.Title != "Old" {
+		t.Fatalf("to-do not back in the recreated area: %+v (area %+v)", it, area)
+	}
+}
+
 // crashAfter runs method on the fake, then cancels the run's context and
 // fails it, the way a thub apply killed right after a write stops.
 type crashAfter struct {
