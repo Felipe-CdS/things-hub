@@ -2,7 +2,10 @@ module github.com/Felipe-CdS/things-hub
 
 go 1.26.2
 
-require modernc.org/sqlite v1.60.1
+require (
+	golang.org/x/oauth2 v0.37.0
+	modernc.org/sqlite v1.60.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
