@@ -9,6 +9,7 @@ Design: see the owner's wiki (`~/Docs/wiki/things-hub/DESIGN.md`).
 - `cmd/thub-server/`: the inbox server for the home server (Go, no LLM).
 - `api/`: wire types shared by the server and its clients: the event envelope and the pull, ack, ledger, audit, snapshot and status shapes.
 - `internal/store/`: SQLite storage, queue and lease logic. `internal/server/`: the HTTP API.
+- `skills/things-hub-collect/`: the company notebook's collector skill (`SKILL.md`) and `thub-send`, its POSIX sh and curl client for the inbox. Install steps are in its `INSTALL.md`.
 
 ## thub-server
 
@@ -24,7 +25,7 @@ The Makefile follows the same pattern as `Felipe-CdS/basement`; images are tagge
 | `make build-local` | Builds the image for this machine only and loads it locally, without pushing |
 | `make run` | `docker run -d` on `127.0.0.1:8787`, database in the `thub-data` volume, `.env` as environment if present |
 | `make dev` | `docker compose --profile hot up -d`: rebuilds and restarts on every Go change (air), database in `tmp/` |
-| `make test` | `go vet ./...` and `go test ./...` |
+| `make test` | `go vet ./...`, `go test ./...`, and the `thub-send` test against a locally started server |
 
 The image is distroless, runs as non-root, and `make run` adds a read-only root filesystem. Settings come from the environment:
 
