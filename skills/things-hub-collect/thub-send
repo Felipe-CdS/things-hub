@@ -1,0 +1,239 @@
+#!/bin/sh
+# thub-send: the company notebook's client for the things-hub inbox.
+#
+#   thub-send post <batch.json>        spool the batch, then send everything spooled, oldest first
+#   thub-send flush                    send everything spooled, oldest first
+#   thub-send cursor <source> <account>  print the last stored cursor (JSON)
+#   thub-send open <source> <account>    print the items still open (JSON)
+#
+# Settings come from the environment, or from the env file
+# ${THUB_ENV_FILE:-$HOME/.config/things-hub/env}, which must not be readable
+# by group or others:
+#
+#   THUB_URL                 inbox base URL, such as https://things-inbox.example.com
+#   THUB_TOKEN               this sender's bearer token (thub_...)
+#   CF_ACCESS_CLIENT_ID      Cloudflare Access service token id (optional)
+#   CF_ACCESS_CLIENT_SECRET  Cloudflare Access service token secret (optional)
+#   THUB_SPOOL               spool directory (default ${XDG_STATE_HOME:-$HOME/.local/state}/things-hub/spool)
+#
+# Exit status: 0 sent; 1 usage or settings error; 2 the server refused a
+# batch, its cursor's account, or some of its events (the batch is moved to
+# <spool>/failed and the response printed); 75 the inbox is unreachable or
+# erroring, so the batch stays in the spool for the next post or flush.
+# Resending is always safe: the server reports events it already has as
+# duplicate.
+#
+# POSIX sh and curl only.
+
+set -u
+
+die() {
+	echo "thub-send: $*" >&2
+	exit 1
+}
+
+usage() {
+	sed -n '4,7p' "$0" | sed 's/^# \{0,1\}//' >&2
+	exit "${1:-1}"
+}
+
+load_settings() {
+	env_file=${THUB_ENV_FILE:-$HOME/.config/things-hub/env}
+	if [ -f "$env_file" ]; then
+		if [ -n "$(find "$env_file" -prune \( -perm -040 -o -perm -004 \) 2>/dev/null)" ]; then
+			die "$env_file is readable by group or others; run: chmod 600 '$env_file'"
+		fi
+		# shellcheck disable=SC1090
+		. "$env_file"
+	fi
+	[ -n "${THUB_URL:-}" ] || die "THUB_URL is not set"
+	[ -n "${THUB_TOKEN:-}" ] || die "THUB_TOKEN is not set"
+	THUB_URL=${THUB_URL%/}
+	for v in "$THUB_TOKEN" "${CF_ACCESS_CLIENT_ID:-}" "${CF_ACCESS_CLIENT_SECRET:-}"; do
+		case $v in
+		*[\"\\\ ]* | *'
+'*) die "a token or Access credential contains a quote, backslash, space or newline" ;;
+		esac
+	done
+	spool=${THUB_SPOOL:-${XDG_STATE_HOME:-$HOME/.local/state}/things-hub/spool}
+	mkdir -p "$spool/failed" || die "cannot create $spool"
+}
+
+# request <method> <path> <body file or empty> <response file>
+# Prints the HTTP status, 000 when the inbox could not be reached. Credentials
+# go to curl on stdin, never on its command line.
+request() {
+	if [ -n "$3" ]; then
+		set -- "$@" -H "Content-Type: application/json" --data-binary "@$3"
+	fi
+	{
+		printf 'header = "Authorization: Bearer %s"\n' "$THUB_TOKEN"
+		if [ -n "${CF_ACCESS_CLIENT_ID:-}" ]; then
+			printf 'header = "CF-Access-Client-Id: %s"\n' "$CF_ACCESS_CLIENT_ID"
+			printf 'header = "CF-Access-Client-Secret: %s"\n' "${CF_ACCESS_CLIENT_SECRET:-}"
+		fi
+	} | {
+		method=$1 path=$2 out=$4
+		shift 4
+		curl -sS -K - -X "$method" -o "$out" -w '%{http_code}' \
+			--connect-timeout 10 --max-time 120 "$@" "$THUB_URL$path" || true
+	}
+}
+
+check_arg() {
+	case $1 in
+	'' | *[!A-Za-z0-9._-]*) die "invalid $2 '$1'" ;;
+	esac
+}
+
+get() {
+	check_arg "$2" source
+	check_arg "$3" account
+	resp=$(mktemp) || die "mktemp failed"
+	code=$(request GET "/v1/$1?source=$2&account=$3" "" "$resp")
+	case $code in
+	2??)
+		cat "$resp"
+		rm -f "$resp"
+		;;
+	000)
+		rm -f "$resp"
+		echo "thub-send: $THUB_URL is unreachable" >&2
+		exit 75
+		;;
+	*)
+		echo "thub-send: GET /v1/$1 failed with HTTP $code: $(head -c 500 "$resp")" >&2
+		rm -f "$resp"
+		exit 1
+		;;
+	esac
+}
+
+# send_one <spooled file>: 0 sent, 2 refused (moved to failed), 75 kept.
+send_one() {
+	f=$1
+	name=${f##*/}
+	resp=$(mktemp) || die "mktemp failed"
+	code=$(request POST /v1/events "$f" "$resp")
+	case $code in
+	2??)
+		counts=$(grep -o '"result":"[a-z]*"' "$resp" | sed 's/.*:"\(.*\)"/\1/' | sort | uniq -c |
+			awk '{printf "%s%s %s", sep, $1, $2; sep=", "}')
+		if grep -q '"result":"rejected"' "$resp"; then
+			mv "$f" "$spool/failed/$name"
+			echo "thub-send: $name: ${counts:-no events}; some events were rejected, so the cursor was not stored." >&2
+			echo "thub-send: fix the rejected events and post them again; the batch is in $spool/failed/$name" >&2
+			cat "$resp"
+			rm -f "$resp"
+			return 2
+		fi
+		rm -f "$f"
+		echo "thub-send: $name: ${counts:-no events}" >&2
+		cat "$resp"
+		rm -f "$resp"
+		return 0
+		;;
+	400 | 413 | 422)
+		mv "$f" "$spool/failed/$name"
+		echo "thub-send: $name: refused with HTTP $code: $(head -c 500 "$resp")" >&2
+		echo "thub-send: fix the batch and post it again; it is in $spool/failed/$name" >&2
+		rm -f "$resp"
+		return 2
+		;;
+	000)
+		echo "thub-send: $THUB_URL is unreachable; $name stays in $spool" >&2
+		;;
+	*)
+		if [ "$code" = 403 ] && grep -q 'may not write the cursor' "$resp"; then
+			mv "$f" "$spool/failed/$name"
+			echo "thub-send: $name: refused with HTTP 403: $(head -c 500 "$resp")" >&2
+			echo "thub-send: allow the account on the sender, then post the batch again; it is in $spool/failed/$name" >&2
+			rm -f "$resp"
+			return 2
+		fi
+		echo "thub-send: $name: HTTP $code: $(head -c 500 "$resp")" >&2
+		echo "thub-send: $name stays in $spool; run 'thub-send flush' once the inbox or the credentials are fixed" >&2
+		;;
+	esac
+	rm -f "$resp"
+	return 75
+}
+
+lock() {
+	lockdir=$spool/.lock
+	tries=0
+	until mkdir "$lockdir" 2>/dev/null; do
+		pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+		if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+			rm -rf "$lockdir"
+			continue
+		fi
+		tries=$((tries + 1))
+		[ "$tries" -lt 60 ] || die "another thub-send holds $lockdir"
+		sleep 1
+	done
+	echo $$ >"$lockdir/pid"
+	trap 'rm -rf "$lockdir"' EXIT
+	trap 'exit 130' INT TERM
+}
+
+# flush sends spooled batches oldest first, so a later cursor is never
+# overwritten by an earlier one. It stops at the first batch it could not
+# deliver and keeps it and everything after it.
+flush() {
+	status=0
+	for f in "$spool"/*.json; do
+		[ -f "$f" ] || continue
+		send_one "$f"
+		rc=$?
+		case $rc in
+		0) ;;
+		2) status=2 ;;
+		*) return "$rc" ;;
+		esac
+	done
+	return "$status"
+}
+
+spool_file() {
+	[ -f "$1" ] && [ -s "$1" ] || die "$1 is missing or empty"
+	seq=$(cat "$spool/.seq" 2>/dev/null || true)
+	case $seq in '' | *[!0-9]*) seq=0 ;; esac
+	seq=$((seq + 1))
+	echo "$seq" >"$spool/.seq" || die "cannot write $spool/.seq"
+	name=$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%010d' "$seq")
+	tmp=$spool/.tmp-$name.json
+	cp "$1" "$tmp" || die "cannot copy $1 into $spool"
+	mv "$tmp" "$spool/$name.json" || die "cannot spool $1"
+}
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+post)
+	[ $# -eq 1 ] || usage
+	load_settings
+	lock
+	spool_file "$1"
+	flush
+	exit $?
+	;;
+flush)
+	[ $# -eq 0 ] || usage
+	load_settings
+	lock
+	flush
+	rc=$?
+	left=$(ls "$spool"/*.json 2>/dev/null | wc -l | tr -d ' ')
+	echo "thub-send: $left batch(es) left in $spool" >&2
+	exit "$rc"
+	;;
+cursor | open)
+	[ $# -eq 2 ] || usage
+	load_settings
+	get "$cmd" "$1" "$2"
+	;;
+-h | --help | help) usage 0 ;;
+*) usage ;;
+esac
