@@ -649,11 +649,17 @@ func (c *crashAfterAddTodo) AddTodo(ctx context.Context, t things.NewTodo) error
 
 func TestUndoKilledAfterRecreatingADeleteDoesNotRecreateItTwice(t *testing.T) {
 	e := newEnv(t)
-	trash := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Dup", Notes: "keep me"})
-	in := e.pull(true)
+	key := e.post("review-requested", "felipe-cds/mic#12", "2026-10-13T10:00:00Z", api.OpUpsert)
+	in := e.pull(false)
 	p := newPlan(in)
+	p.Items = []plan.Decision{createDecision(key)}
+	trash := e.apply(in, p, ApplyOptions{}).Ops[0].UUID
+	in = e.pull(true)
+	p = newPlan(in)
 	p.Organize = []plan.Organize{{Op: plan.OpDelete, UUID: trash, Reason: "duplicate"}}
-	e.apply(in, p, ApplyOptions{})
+	if rep := e.apply(in, p, ApplyOptions{}); rep.Ops[0].Status != StatusApplied {
+		t.Fatalf("delete %+v", rep.Ops)
+	}
 
 	e.fake.Fail = func(method string) error {
 		if method == "Restore" {
@@ -676,12 +682,16 @@ func TestUndoKilledAfterRecreatingADeleteDoesNotRecreateItTwice(t *testing.T) {
 	snap, _ := e.fake.Snapshot(context.Background(), 30)
 	var copies []things.Item
 	for _, it := range snap.Todos {
-		if it.Title == "Dup" && !it.Trashed {
+		if it.Title == "Review PR: mic#12" && !it.Trashed {
 			copies = append(copies, it)
 		}
 	}
-	if len(copies) != 1 || !strings.HasPrefix(copies[0].Notes, "keep me") {
+	if len(copies) != 1 || copies[0].UUID == trash || !strings.HasPrefix(copies[0].Notes, "Review requested.") {
 		t.Fatalf("open copies of the deleted to-do after the resumed undo: %+v", copies)
+	}
+	if rows := e.ledger(key); len(rows) != 1 || rows[0].UUID != copies[0].UUID || rows[0].State != api.ThingOpen ||
+		rows[0].Marker != things.MarkerIn(copies[0].Notes) {
+		t.Fatalf("ledger rows of the key after the resumed undo: %+v", rows)
 	}
 	if steps, _ := e.r.Undo(context.Background(), in.RunID); steps[0].Status != StatusReplayed {
 		t.Fatalf("third undo steps %+v", steps)
