@@ -97,7 +97,7 @@ Report to Firstmate: the GitHub post counts, the dry-run diff, the created, chan
 thub undo <run-id>
 ```
 
-Writes back the inverse of a run's changes, newest first: updates and moves get their before state, completions and cancels are reopened, creates are canceled, deletes come back out of the Trash (or are recreated from the snapshot if that fails), project moves go back. It is recorded as run `undo-<run-id>`; running it again only does what is left. A created area is deleted only if it is empty, and a created tag only if no item uses it.
+Writes back the inverse of a run's changes, newest first: updates and moves get their before state, completions and cancels are reopened, creates are canceled, deletes come back out of the Trash (or are recreated from the snapshot if that fails, and the copy takes over the original's source links), a deleted area is recreated under a new uuid and the to-dos moved out of it go back into it, project moves go back. It is recorded as run `undo-<run-id>`; running it again only does what is left. A created area is deleted only if it is empty, and a created tag only if no item uses it.
 
 ## Files
 
