@@ -632,6 +632,62 @@ func TestCrashAfterDeleteIsStillUndone(t *testing.T) {
 	}
 }
 
+// crashAfterAddTodo creates the to-do, then cancels the undo's context and
+// fails, the way a thub undo killed right after its fallback AddTodo stops.
+type crashAfterAddTodo struct {
+	*thingstest.Fake
+	cancel context.CancelFunc
+}
+
+func (c *crashAfterAddTodo) AddTodo(ctx context.Context, t things.NewTodo) error {
+	if err := c.Fake.AddTodo(ctx, t); err != nil {
+		return err
+	}
+	c.cancel()
+	return thingstest.ErrCrash
+}
+
+func TestUndoKilledAfterRecreatingADeleteDoesNotRecreateItTwice(t *testing.T) {
+	e := newEnv(t)
+	trash := e.fake.Put(things.Item{Type: things.TypeTodo, Title: "Dup", Notes: "keep me"})
+	in := e.pull(true)
+	p := newPlan(in)
+	p.Organize = []plan.Organize{{Op: plan.OpDelete, UUID: trash, Reason: "duplicate"}}
+	e.apply(in, p, ApplyOptions{})
+
+	e.fake.Fail = func(method string) error {
+		if method == "Restore" {
+			return thingstest.ErrCrash
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.r.Things = &crashAfterAddTodo{Fake: e.fake, cancel: cancel}
+	e.r.Undo(ctx, in.RunID)
+
+	e.r.Things = e.fake
+	steps, err := e.r.Undo(context.Background(), in.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Status != StatusApplied {
+		t.Fatalf("undo steps %+v", steps)
+	}
+	snap, _ := e.fake.Snapshot(context.Background(), 30)
+	var copies []things.Item
+	for _, it := range snap.Todos {
+		if it.Title == "Dup" && !it.Trashed {
+			copies = append(copies, it)
+		}
+	}
+	if len(copies) != 1 || !strings.HasPrefix(copies[0].Notes, "keep me") {
+		t.Fatalf("open copies of the deleted to-do after the resumed undo: %+v", copies)
+	}
+	if steps, _ := e.r.Undo(context.Background(), in.RunID); steps[0].Status != StatusReplayed {
+		t.Fatalf("third undo steps %+v", steps)
+	}
+}
+
 // layoutRunWithDeleteArea applies a run that moves a to-do out of area Old
 // and then deletes Old. It returns the run id and the to-do.
 func layoutRunWithDeleteArea(e *env) (string, string) {

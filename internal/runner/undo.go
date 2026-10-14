@@ -46,7 +46,8 @@ func (r *Runner) Undo(ctx context.Context, runID string) ([]UndoStep, error) {
 	}
 	applied := map[string]bool{}
 	// Write-ahead rows of steps a killed undo started: the areas that had
-	// the recreated area's title before its AddArea.
+	// the recreated area's title before its AddArea, or the marker of an
+	// item recreated from the Trash.
 	ahead := map[string]json.RawMessage{}
 	for _, a := range led.AppliedOps {
 		applied[a.OpID] = a.Result == resultOK || a.Result == resultAlready
@@ -237,7 +238,7 @@ func (r *Runner) inverse(ctx context.Context, e api.AuditEntry, step *UndoStep, 
 		return ch, api.ThingOpen, update(ch)
 	case plan.KindDelete:
 		step.Describe = fmt.Sprintf("↺ restore %s %q from the Trash", typ, before.Title)
-		return r.undelete(ctx, e.ThingUUID, before)
+		return r.undelete(ctx, UndoRunID(e.RunID), step.OpID, e.ThingUUID, before, ahead)
 	case plan.KindMoveProject:
 		step.Describe = fmt.Sprintf("> move project %q back", before.Title)
 		if before.Area == "" {
@@ -301,8 +302,11 @@ func (r *Runner) recreateArea(ctx context.Context, runID, opID, title string, ah
 }
 
 // undelete moves an item out of the Trash, and recreates it from its before
-// state when the move did not take.
-func (r *Runner) undelete(ctx context.Context, uuid string, before things.Item) (any, string, error) {
+// state when the move did not take. The recreate is write-ahead like apply:
+// its marker is recorded first, so a resumed undo finds the copy its killed
+// run created instead of adding a second one.
+func (r *Runner) undelete(ctx context.Context, runID, opID, uuid string, before things.Item,
+	ahead map[string]json.RawMessage) (any, string, error) {
 	st, err := r.Things.Lookup(ctx, uuid)
 	if err != nil {
 		return nil, "", err
@@ -310,26 +314,65 @@ func (r *Runner) undelete(ctx context.Context, uuid string, before things.Item) 
 	if st != nil && !st.Trashed {
 		return nil, ledgerState(st), nil
 	}
-	if st != nil {
+	var marker string
+	if raw, ok := ahead[opID]; ok {
+		if err := json.Unmarshal(raw, &marker); err != nil {
+			return nil, "", fmt.Errorf("decode write-ahead of %s: %w", opID, err)
+		}
+		it, err := r.findMarker(ctx, marker)
+		if err != nil {
+			return nil, "", err
+		}
+		if it != nil {
+			return map[string]string{"recreated_from": uuid, "uuid": it.UUID, "marker": marker}, api.ThingGone, nil
+		}
+	} else if st != nil {
 		if err := r.Things.Restore(ctx, uuid, before.Type, before.ListID()); err == nil {
-			if st, err = r.Things.Lookup(ctx, uuid); err == nil && st != nil && !st.Trashed {
+			restored, err := r.poll(ctx, func() (bool, error) {
+				st, err := r.Things.Lookup(ctx, uuid)
+				return st != nil && !st.Trashed, err
+			})
+			if err != nil {
+				return nil, "", err
+			}
+			if restored {
 				return map[string]string{"restored": uuid}, api.ThingOpen, nil
 			}
 		}
 	}
 	// Fallback: recreate from the snapshot taken before the delete.
+	if marker == "" {
+		marker = things.NewMarker()
+		req := api.LedgerPutRequest{AppliedOps: []api.AppliedOp{{OpID: opID, RunID: runID, Result: resultStarted,
+			Detail: mustJSON(marker)}}}
+		if _, err := r.Hub.PutLedger(ctx, req); err != nil {
+			return nil, "", fmt.Errorf("record %s: %w", opID, err)
+		}
+	}
+	notes := things.BuildNotes(before.Notes, nil, marker)
+	if old := things.MarkerIn(before.Notes); old != "" {
+		notes = strings.ReplaceAll(before.Notes, old, marker)
+	}
 	if before.Type == things.TypeProject {
-		err = r.Things.AddProject(ctx, things.NewProject{Title: before.Title, Notes: before.Notes,
+		err = r.Things.AddProject(ctx, things.NewProject{Title: before.Title, Notes: notes,
 			Deadline: before.Deadline, Tags: before.Tags, AreaID: before.Area})
 	} else {
-		err = r.Things.AddTodo(ctx, things.NewTodo{Title: before.Title, Notes: before.Notes, When: whenOf(before),
+		err = r.Things.AddTodo(ctx, things.NewTodo{Title: before.Title, Notes: notes, When: whenOf(before),
 			Deadline: before.Deadline, Tags: before.Tags, Checklist: before.ChecklistTitles(), ListID: before.ListID(),
 			HeadingID: before.Heading})
 	}
 	if err != nil {
 		return nil, "", err
 	}
-	return map[string]string{"recreated_from": uuid}, api.ThingGone, nil
+	it, err := r.findMarker(ctx, marker)
+	if err != nil {
+		return nil, "", err
+	}
+	if it == nil {
+		return nil, "", fmt.Errorf("recreated %s %q (marker %s) did not show up within %s; re-run the undo",
+			before.Type, before.Title, marker, r.FindTimeout)
+	}
+	return map[string]string{"recreated_from": uuid, "uuid": it.UUID, "marker": marker}, api.ThingGone, nil
 }
 
 func (r *Runner) deleteCreatedArea(ctx context.Context, uuid string) (any, string, error) {

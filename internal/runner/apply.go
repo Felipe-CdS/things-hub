@@ -330,30 +330,30 @@ func (s *applyState) run(ctx context.Context, op plan.Op) OpReport {
 
 // poll calls try until it reports done or FindTimeout passes, since Things
 // writes asynchronously.
-func (s *applyState) poll(ctx context.Context, try func() (bool, error)) (bool, error) {
-	deadline := s.r.Now().Add(s.r.FindTimeout)
+func (r *Runner) poll(ctx context.Context, try func() (bool, error)) (bool, error) {
+	deadline := r.Now().Add(r.FindTimeout)
 	for {
 		done, err := try()
 		if err != nil || done {
 			return done, err
 		}
-		if !s.r.Now().Before(deadline) {
+		if !r.Now().Before(deadline) {
 			return false, nil
 		}
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case <-time.After(s.r.FindInterval):
+		case <-time.After(r.FindInterval):
 		}
 	}
 }
 
 // findMarker polls for a marker until FindTimeout.
-func (s *applyState) findMarker(ctx context.Context, marker string) (*things.Item, error) {
+func (r *Runner) findMarker(ctx context.Context, marker string) (*things.Item, error) {
 	var it *things.Item
-	_, err := s.poll(ctx, func() (bool, error) {
+	_, err := r.poll(ctx, func() (bool, error) {
 		var err error
-		it, err = s.r.Things.FindByMarker(ctx, marker)
+		it, err = r.Things.FindByMarker(ctx, marker)
 		return it != nil, err
 	})
 	return it, err
@@ -387,7 +387,7 @@ func (s *applyState) create(ctx context.Context, op plan.Op) (OpReport, error) {
 			return or, fmt.Errorf("write-ahead: %w", err)
 		}
 		s.byOp[op.ID] = ahead
-	} else if it, err := s.findMarker(ctx, marker); err != nil {
+	} else if it, err := s.r.findMarker(ctx, marker); err != nil {
 		return or, err
 	} else if it != nil {
 		return s.created(ctx, op, marker, it, StatusAlready)
@@ -406,7 +406,7 @@ func (s *applyState) create(ctx context.Context, op plan.Op) (OpReport, error) {
 	if err != nil {
 		return or, err
 	}
-	it, err := s.findMarker(ctx, marker)
+	it, err := s.r.findMarker(ctx, marker)
 	if err != nil {
 		return or, err
 	}
@@ -519,7 +519,7 @@ func (s *applyState) change(ctx context.Context, op plan.Op) (OpReport, error) {
 		already, state = st.Trashed, api.ThingTrashed
 	case plan.KindDeleteArea:
 		n := st.Contents
-		if _, err := s.poll(ctx, func() (bool, error) {
+		if _, err := s.r.poll(ctx, func() (bool, error) {
 			a, err := s.r.Things.Lookup(ctx, op.UUID)
 			if a != nil {
 				n = a.Contents
@@ -631,7 +631,7 @@ func (s *applyState) waitStatus(ctx context.Context, op plan.Op, state string) e
 		want = things.StatusCanceled
 	}
 	var got string
-	ok, err := s.poll(ctx, func() (bool, error) {
+	ok, err := s.r.poll(ctx, func() (bool, error) {
 		st, err := s.r.Things.Lookup(ctx, op.UUID)
 		if st != nil {
 			got = st.Status
