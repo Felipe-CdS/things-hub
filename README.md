@@ -62,6 +62,8 @@ The image is distroless, runs as non-root, and `make run` adds a read-only root 
 | `THUB_LISTEN` | `:8787` | Listen address |
 | `THUB_RETENTION_DAYS` | `90` | Event payloads older than this are pruned (daily, and by `prune`); keys and revisions stay, so dedupe keeps working |
 
+If the container exits at start with `thub-server: read schema version: database or disk is full (13)`, the Docker Desktop disk is full, not the volume. Check with `docker system df` and free space, for example with `docker builder prune`.
+
 The port is published only on `127.0.0.1`. In phase 1 the Mac reaches it over an SSH forward: `ssh -N -L 8787:127.0.0.1:8787 <home-server>`.
 
 ### Administration
