@@ -145,7 +145,7 @@ func openThings(ctx context.Context, cfg *macconf.Config) (*things.Live, error) 
 		db.Close()
 		return nil, err
 	}
-	return &things.Live{MCP: m, DB: db, Exec: things.RunCommand}, nil
+	return &things.Live{MCP: m, DB: db, Exec: things.RunCommand, URLToken: cfg.ThingsAuthToken}, nil
 }
 
 func accounts(cfg *macconf.Config) events.Accounts {
@@ -216,19 +216,23 @@ func doctor(ctx context.Context, cfg *macconf.Config, out io.Writer) error {
 	}
 	cancel()
 
-	path, err := things.FindDB()
-	if err == nil {
-		var db *things.DB
-		if db, err = things.OpenDB(path); err == nil {
-			var tok string
-			tok, err = db.AuthToken(ctx)
-			db.Close()
-			if err == nil && tok == "" {
-				err = errors.New("empty: turn on Things → Settings → General → Enable Things URLs (restart Things if it stays empty)")
+	if cfg.ThingsAuthToken != "" {
+		report("Things URL auth token", nil, "present in the .env (value not shown)")
+	} else {
+		path, err := things.FindDB()
+		if err == nil {
+			var db *things.DB
+			if db, err = things.OpenDB(path); err == nil {
+				var tok string
+				tok, err = db.AuthToken(ctx)
+				db.Close()
+				if err == nil && tok == "" {
+					err = errors.New("empty: set THINGS_AUTH_TOKEN in the .env or turn on Things → Settings → General → Enable Things URLs (restart Things if it stays empty)")
+				}
 			}
 		}
+		report("Things URL auth token", err, "present in the Things database (value not shown)")
 	}
-	report("Things URL auth token", err, "present (value not shown)")
 
 	_, err = exec.LookPath("osascript")
 	report("osascript", err, "for tags, deletes and project moves")

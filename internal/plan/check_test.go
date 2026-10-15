@@ -190,8 +190,15 @@ func TestDeleteAreaAfterMovingItsContents(t *testing.T) {
 	}
 }
 
+func TestDefaultNewTodoLimit(t *testing.T) {
+	if got := (Limits{}).WithDefaults().NewTodos; got != 25 {
+		t.Fatalf("default new to-do limit %d, want 25", got)
+	}
+}
+
 func TestLimits(t *testing.T) {
 	in := input()
+	in.Limits = Limits{NewTodos: 15}
 	in.Items = nil
 	for i := range 16 {
 		in.Items = append(in.Items, api.LeasedItem{Key: fmt.Sprintf("github:felipe-cds:assigned:felipe-cds/r#%d", i),
