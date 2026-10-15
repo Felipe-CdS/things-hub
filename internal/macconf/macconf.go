@@ -21,15 +21,18 @@ type Config struct {
 	// Home holds the .env, state.json, runs and spool.
 	Home string
 	// EnvFile is the .env that was read, if any.
-	EnvFile     string
-	ServerURL   string
-	Token       string
-	CFAccessID  string
-	CFAccessKey string
-	GitHubLogin string
-	ThingsMCP   []string
-	RunsDir     string
-	Limits      plan.Limits
+	EnvFile   string
+	ServerURL string
+	Token     string
+	// ThingsAuthToken is THINGS_AUTH_TOKEN; empty means read it from the
+	// Things database. Never print it.
+	ThingsAuthToken string
+	CFAccessID      string
+	CFAccessKey     string
+	GitHubLogin     string
+	ThingsMCP       []string
+	RunsDir         string
+	Limits          plan.Limits
 }
 
 // DefaultHome is ~/Library/Application Support/things-hub.
@@ -125,6 +128,7 @@ func Load() (*Config, error) {
 		c.ServerURL = "http://127.0.0.1:8787"
 	}
 	c.Token = get("THUB_TOKEN")
+	c.ThingsAuthToken = get("THINGS_AUTH_TOKEN")
 	c.CFAccessID, c.CFAccessKey = get("CF_ACCESS_CLIENT_ID"), get("CF_ACCESS_CLIENT_SECRET")
 	c.GitHubLogin = strings.ToLower(get("THUB_GITHUB_LOGIN"))
 	c.ThingsMCP = strings.Fields(get("THUB_THINGS_MCP"))

@@ -173,7 +173,7 @@ type Limits struct {
 }
 
 // DefaultLimits are the POLICY.md defaults.
-var DefaultLimits = Limits{NewTodos: 15, Deletes: 10, Moves: 50, AreaChanges: 3}
+var DefaultLimits = Limits{NewTodos: 25, Deletes: 10, Moves: 50, AreaChanges: 3}
 
 // WithDefaults fills zero limits with the defaults.
 func (l Limits) WithDefaults() Limits {

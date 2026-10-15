@@ -10,13 +10,13 @@ import (
 func TestLoadReadsEnvAndRefusesLoosePermissions(t *testing.T) {
 	dir := t.TempDir()
 	env := filepath.Join(dir, ".env")
-	body := "# things-hub\nTHUB_URL=http://127.0.0.1:9999/\nexport THUB_TOKEN=\"thub_secret\"\nTHUB_GITHUB_LOGIN=Felipe-CdS\nTHUB_LIMIT_NEW_TODOS=7\n"
+	body := "# things-hub\nTHUB_URL=http://127.0.0.1:9999/\nexport THUB_TOKEN=\"thub_secret\"\nTHUB_GITHUB_LOGIN=Felipe-CdS\nTHUB_LIMIT_NEW_TODOS=7\nTHINGS_AUTH_TOKEN=\"things_secret\"\n"
 	if err := os.WriteFile(env, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("THUB_HOME", dir)
 	t.Setenv("THUB_ENV_FILE", env)
-	for _, k := range []string{"THUB_URL", "THUB_TOKEN", "THUB_GITHUB_LOGIN", "THUB_LIMIT_NEW_TODOS"} {
+	for _, k := range []string{"THUB_URL", "THUB_TOKEN", "THUB_GITHUB_LOGIN", "THUB_LIMIT_NEW_TODOS", "THINGS_AUTH_TOKEN"} {
 		os.Unsetenv(k)
 	}
 	var pe *PermissionError
@@ -31,7 +31,8 @@ func TestLoadReadsEnvAndRefusesLoosePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.ServerURL != "http://127.0.0.1:9999" || c.Token != "thub_secret" || c.GitHubLogin != "felipe-cds" ||
-		c.Limits.NewTodos != 7 || c.Limits.Deletes != 10 || c.RunsDir != filepath.Join(dir, "runs") {
+		c.Limits.NewTodos != 7 || c.Limits.Deletes != 10 || c.RunsDir != filepath.Join(dir, "runs") ||
+		c.ThingsAuthToken != "things_secret" {
 		t.Fatalf("config %+v", c)
 	}
 	t.Setenv("THUB_TOKEN", "thub_from_env")

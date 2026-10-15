@@ -31,6 +31,18 @@ type Live struct {
 	*MCP
 	DB   *DB
 	Exec Exec
+	// URLToken is THINGS_AUTH_TOKEN from the thub .env. When empty, the
+	// token comes from the Things database.
+	URLToken string
+}
+
+// authToken returns the URL-scheme auth token: the .env's when set, else the
+// Things database's. Callers must never print it.
+func (l *Live) authToken(ctx context.Context) (string, error) {
+	if l.URLToken != "" {
+		return l.URLToken, nil
+	}
+	return l.DB.AuthToken(ctx)
 }
 
 // Lookup reads one item from the Things database.
@@ -101,12 +113,12 @@ if (item 2 of argv) is not "" then set area of p to area id (item 2 of argv)`
 // MoveProject moves a project to another area with the URL scheme's
 // update-project area-id, which things-mcp does not pass.
 func (l *Live) MoveProject(ctx context.Context, uuid, areaID string) error {
-	token, err := l.DB.AuthToken(ctx)
+	token, err := l.authToken(ctx)
 	if err != nil {
 		return err
 	}
 	if token == "" {
-		return errors.New("the Things URL auth token is empty: turn on Settings → General → Enable Things URLs")
+		return errors.New("the Things URL auth token is empty: set THINGS_AUTH_TOKEN in the .env or turn on Settings → General → Enable Things URLs")
 	}
 	q := url.Values{"id": {uuid}, "area-id": {areaID}, "auth-token": {token}}
 	u := "things:///update-project?" + strings.ReplaceAll(q.Encode(), "+", "%20")

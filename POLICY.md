@@ -28,7 +28,7 @@ There is no "owner edits win" rule and no "add only" rule. The guard rails below
 
   | Limit | Default | `.env` key |
   | --- | --- | --- |
-  | New to-dos (including a new project's steps) | 15 | `THUB_LIMIT_NEW_TODOS` |
+  | New to-dos (including a new project's steps) | 25 | `THUB_LIMIT_NEW_TODOS` |
   | Deletes (to-dos and projects to the Trash) | 10 | `THUB_LIMIT_DELETES` |
   | Moves, reschedules and other changes to items that existed before the run | 50 | `THUB_LIMIT_MOVES` |
   | Area creations and deletions | 3 | `THUB_LIMIT_AREA_CHANGES` |
